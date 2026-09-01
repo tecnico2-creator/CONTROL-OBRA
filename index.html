@@ -25,6 +25,7 @@
     --amarillo:#d97706;
     --naranja:#ea580c;
     --indigo:#4f46e5;
+    --teal:#0d9488;
     --verde:#16a34a;
     --radio:12px;
     --sombra:0 1px 3px rgba(0,0,0,.1), 0 1px 2px rgba(0,0,0,.06);
@@ -114,13 +115,14 @@
   .obra-item .pct{font-size:13px;font-weight:700;color:var(--primario);flex-shrink:0;}
   .progress-wrap{background:var(--gris-200);border-radius:20px;height:10px;overflow:hidden;margin-top:8px;}
   .progress-bar{height:100%;background:linear-gradient(90deg,var(--primario),var(--verde));border-radius:20px;transition:width .3s;}
-  .stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:14px;}
+  .stat-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-top:14px;}
   .stat{background:var(--gris-100);border-radius:10px;padding:10px 6px;text-align:center;}
   .stat .n{font-size:18px;font-weight:800;}
   .stat .l{font-size:10.5px;color:var(--gris-600);margin-top:2px;line-height:1.2;}
   .stat.instalada .n{color:var(--amarillo);}
   .stat.sellada .n{color:var(--naranja);}
   .stat.acristalada .n{color:var(--indigo);}
+  .stat.composite .n{color:var(--teal);}
   .stat.terminada .n{color:var(--verde);}
   .pctbig{font-size:40px;font-weight:800;color:var(--primario);line-height:1;}
   .tabs{display:flex;gap:6px;margin-bottom:14px;background:#fff;border-radius:10px;padding:4px;box-shadow:var(--sombra);overflow-x:auto;}
@@ -134,7 +136,10 @@
   .vchip.st-instalada{border-top-color:var(--amarillo);}
   .vchip.st-sellada{border-top-color:var(--naranja);}
   .vchip.st-acristalada{border-top-color:var(--indigo);}
+  .vchip.st-composite{border-top-color:var(--teal);}
   .vchip.st-terminada{border-top-color:var(--verde);background:#f0fdf4;}
+  .vchip.sin-asignar{border-top-style:dashed;border-top-color:var(--gris-400);background:#fafafa;}
+  .vchip.sin-asignar .et{color:var(--rojo);font-weight:700;}
   .vchip .num{font-weight:800;font-size:15px;}
   .vchip .et{font-size:9.5px;color:var(--gris-600);margin-top:2px;}
   .vchip .badges{position:absolute;top:4px;right:4px;display:flex;gap:2px;}
@@ -314,11 +319,11 @@ const NOMBRE_APP = "Control de Instalación";
 /* ============================================================
    CONSTANTES DE DOMINIO
    ============================================================ */
-const ETAPAS = ["instalada", "sellada", "acristalada", "terminada"];
-const ETAPA_LABEL = { instalada: "Instalada", sellada: "Sellada", acristalada: "Acristalada", terminada: "Terminada" };
-const ETAPA_ICONO = { instalada: "🪟", sellada: "🧴", acristalada: "🔷", terminada: "✅" };
+const ETAPAS = ["instalada", "sellada", "acristalada", "composite", "terminada"];
+const ETAPA_LABEL = { instalada: "Instalada", sellada: "Sellada", acristalada: "Acristalada", composite: "Composite", terminada: "Terminada" };
+const ETAPA_ICONO = { instalada: "🪟", sellada: "🧴", acristalada: "🔷", composite: "🧱", terminada: "✅" };
 
-function estadoVacio(){ return { instalada:false, sellada:false, acristalada:false, terminada:false }; }
+function estadoVacio(){ return { instalada:false, sellada:false, acristalada:false, composite:false, terminada:false }; }
 
 // Devuelve la etapa más avanzada alcanzada (para colorear), o null si ninguna
 function ultimaEtapa(estado){
@@ -751,7 +756,7 @@ function renderListaObras(){
         checks += pasosCompletados(v.estado);
         if(v.estado && v.estado.terminada) terminadas++;
       });
-      const pct = total ? Math.round((checks/(total*4))*100) : 0;
+      const pct = total ? Math.round((checks/(total*ETAPAS.length))*100) : 0;
       return {obra, total, terminadas, pct};
     }));
     document.getElementById("listaObras").innerHTML = filas.map(({obra,total,terminadas,pct})=>`
@@ -809,6 +814,8 @@ function renderNuevaObra(){
 }
 
 function etiquetaVentana(n){ return "V" + String(n).padStart(4,"0"); }
+// Etiqueta de los QR "genéricos" (sin casa/planta asignada todavía) — con prefijo G para distinguirlos a simple vista
+function etiquetaGenerica(n){ return "G" + String(n).padStart(4,"0"); }
 
 async function crearVentanas(obraId, desde, hasta){
   const obraRef = db.collection("obras").doc(obraId);
@@ -820,6 +827,7 @@ async function crearVentanas(obraId, desde, hasta){
       numero: n,
       etiqueta: etiquetaVentana(n),
       casa: "", planta: "", numeroPlano: "", referencia: "",
+      asignada: true,
       estado: estadoVacio(),
       notas: [],
       fotos: [],
@@ -829,6 +837,32 @@ async function crearVentanas(obraId, desde, hasta){
     if(count % 400 === 0){ await batch.commit(); batch = db.batch(); }
   }
   await batch.commit();
+}
+
+// Crea QR "genéricos": sin casa/planta/número/referencia todavía. El instalador los asigna al escanear
+// por primera vez en obra, para poder repartir libremente qué ventana física va en cada hueco.
+async function crearVentanasGenericas(obraId, cantidad, numeroInicial){
+  const obraRef = db.collection("obras").doc(obraId);
+  let batch = db.batch();
+  let count = 0;
+  for(let i = 0; i < cantidad; i++){
+    const n = numeroInicial + i;
+    const ref = obraRef.collection("ventanas").doc(etiquetaGenerica(n));
+    batch.set(ref, {
+      numero: n,
+      etiqueta: etiquetaGenerica(n),
+      casa: "", planta: "", numeroPlano: "", referencia: "",
+      asignada: false,
+      estado: estadoVacio(),
+      notas: [],
+      fotos: [],
+      actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    count++;
+    if(count % 400 === 0){ await batch.commit(); batch = db.batch(); }
+  }
+  await batch.commit();
+  return count;
 }
 
 // Crea ventanas a partir de filas ya normalizadas {casa, planta, numero, referencia}, importadas de un Excel/CSV.
@@ -852,6 +886,7 @@ async function crearVentanasDesdeFilas(obraId, filas, numeroInicial){
       planta: fila.planta || "",
       numeroPlano: fila.numero || "",
       referencia: fila.referencia || "",
+      asignada: true,
       estado: estadoVacio(),
       notas: [],
       fotos: [],
@@ -971,7 +1006,7 @@ function renderObraDetalle(obraId, tabInicial){
     }
 
     const checks = ventanas.reduce((n,v)=> n + pasosCompletados(v.estado), 0);
-    const pct = total ? Math.round((checks/(total*4))*100) : 0;
+    const pct = total ? Math.round((checks/(total*ETAPAS.length))*100) : 0;
     const cuentas = {instalada:0,sellada:0,acristalada:0,terminada:0};
     ventanas.forEach(v=>{ ETAPAS.forEach(e=>{ if(v.estado && v.estado[e]) cuentas[e]++; }); });
     const maxNumero = ventanas.reduce((m,v)=> Math.max(m, v.numero||0), 0);
@@ -1000,7 +1035,10 @@ function renderObraDetalle(obraId, tabInicial){
           <button class="btn btn-outline" id="btnImportarExcel">📥 Importar Excel/CSV</button>
         </div>
         <div class="btn-row">
+          <button class="btn btn-outline" id="btnGenerarGenericas">🏷️ Generar QR genéricos</button>
           <button class="btn btn-secondary" id="btnPdfQr">🧾 PDF de etiquetas QR</button>
+        </div>
+        <div class="btn-row">
           <button class="btn btn-secondary" id="btnExportExcel">📊 Exportar Excel completo</button>
           <button class="btn btn-secondary" id="btnExportPendientes">📋 Exportar pendientes</button>
         </div>
@@ -1014,6 +1052,7 @@ function renderObraDetalle(obraId, tabInicial){
     document.getElementById("btnScan").addEventListener("click", ()=> navegar(`#/scan`));
     document.getElementById("btnAddVentanas").addEventListener("click", ()=> abrirAddVentanas(obraId, total));
     document.getElementById("btnImportarExcel").addEventListener("click", ()=> abrirImportarExcel(obraId, maxNumero+1));
+    document.getElementById("btnGenerarGenericas").addEventListener("click", ()=> abrirGenerarGenericas(obraId, maxNumero+1));
     document.getElementById("btnPdfQr").addEventListener("click", ()=> generarPdfQr(obraId, obraData, ventanas));
     document.getElementById("btnExportExcel").addEventListener("click", ()=> generarExcelCompleto(obraData, ventanas));
     document.getElementById("btnExportPendientes").addEventListener("click", ()=> abrirExportarPendientes(obraId, obraData, ventanas));
@@ -1050,12 +1089,13 @@ function renderObraDetalle(obraId, tabInicial){
 
     function chipHtml(v){
       const et = ultimaEtapa(v.estado);
+      const sinAsignar = v.asignada === false;
       const nNotas = (v.notas||[]).length, nFotos = (v.fotos||[]).length;
       return `
-        <div class="vchip ${et?("st-"+et):""}" data-id="${v.id}">
+        <div class="vchip ${sinAsignar ? "sin-asignar" : (et?("st-"+et):"")}" data-id="${v.id}">
           ${(nNotas||nFotos) ? `<div class="badges">${nNotas?`<span>📝</span>`:""}${nFotos?`<span>📷</span>`:""}</div>` : ""}
           <div class="num">${esc(etiquetaCorta(v))}</div>
-          <div class="et">${et ? ETAPA_LABEL[et] : "Pendiente"}</div>
+          <div class="et">${sinAsignar ? "❓ Sin asignar" : (et ? ETAPA_LABEL[et] : "Pendiente")}</div>
         </div>`;
     }
 
@@ -1073,7 +1113,7 @@ function renderObraDetalle(obraId, tabInicial){
       });
       cuerpoHtml = [...porCasa.entries()].map(([casaKey, lista])=>{
         const checks = lista.reduce((n,v)=> n + pasosCompletados(v.estado), 0);
-        const pctCasa = Math.round((checks/(lista.length*4))*100);
+        const pctCasa = Math.round((checks/(lista.length*ETAPAS.length))*100);
         const porPlanta = new Map();
         lista.forEach(v=>{
           const plantaKey = v.planta || "__sin_planta__";
@@ -1216,6 +1256,30 @@ function abrirAddVentanas(obraId, totalActual){
   });
 }
 
+function abrirGenerarGenericas(obraId, numeroInicial){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  openModal(`
+    <h3>Generar QR genéricos</h3>
+    <p class="muted" style="margin-bottom:14px;">
+      Se crean etiquetas QR <b>sin casa ni planta asignada todavía</b> (se les pega la pegatina a las
+      ventanas físicas sin tener que decidir de antemano a qué hueco van). El instalador, al escanear
+      cada una por primera vez en obra, le asigna el número de plano y la casa que le corresponda.
+    </p>
+    <label class="field"><span>¿Cuántos códigos genéricos quieres generar?</span><input type="number" id="inpGenericas" min="1" max="2000" placeholder="Ej: 50" /></label>
+    <button class="btn btn-primary btn-block" id="btnConfirmarGenericas">Generar</button>
+  `);
+  document.getElementById("btnConfirmarGenericas").addEventListener("click", async ()=>{
+    const n = parseInt(document.getElementById("inpGenericas").value,10);
+    if(!n || n<1){ toast("Cantidad no válida"); return; }
+    closeModal();
+    try{
+      const creadas = await crearVentanasGenericas(obraId, n, numeroInicial);
+      await db.collection("obras").doc(obraId).update({ numVentanas: firebase.firestore.FieldValue.increment(creadas) });
+      toast(`${creadas} QR genéricos generados`);
+    }catch(err){ toast("Error: " + err.message); }
+  });
+}
+
 function abrirImportarExcel(obraId, numeroInicial){
   if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
   openModal(`
@@ -1321,11 +1385,15 @@ function renderVentana(obraId, ventanaId){
 
   function pintar(v){
     ultimoV = v;
+    if(v.asignada === false){ pintarAsignacion(v); return; }
     setTopbar(`${obraNombre} · ${etiquetaCorta(v)}`, descripcionVentana(v), true);
     const estado = v.estado || estadoVacio();
     $app().innerHTML = `
       <div class="card">
-        <h2 style="font-size:19px;">Ventana ${esc(etiquetaCorta(v))}</h2>
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
+          <h2 style="font-size:19px;">Ventana ${esc(etiquetaCorta(v))}</h2>
+          <button class="link-btn" id="btnEditarAsignacion" style="white-space:nowrap;">✏️ Editar</button>
+        </div>
         ${descripcionVentana(v) ? `<p class="muted" style="margin-top:2px;">${esc(descripcionVentana(v))}</p>` : ""}
         <p class="muted" style="margin-top:6px;">Marca cada etapa según avance la instalación</p>
         <div style="margin-top:14px;">
@@ -1374,6 +1442,7 @@ function renderVentana(obraId, ventanaId){
     document.querySelectorAll(".etapa-row").forEach(row=>{
       row.addEventListener("click", ()=> toggleEtapa(obraId, obraNombre, vRef, ventanaId, etiquetaCorta(v), estado, row.dataset.e));
     });
+    document.getElementById("btnEditarAsignacion").addEventListener("click", ()=> abrirEditarAsignacion(obraId, ventanaId, vRef, v));
     document.getElementById("btnAddNota").addEventListener("click", ()=> addNota(vRef));
     document.getElementById("btnFoto").addEventListener("click", ()=> document.getElementById("inpFoto").click());
     document.getElementById("inpFoto").addEventListener("change", (e)=> subirFotos(obraId, ventanaId, vRef, e.target.files));
@@ -1383,6 +1452,22 @@ function renderVentana(obraId, ventanaId){
     document.querySelectorAll(".nota-item .del").forEach(b=>{
       b.addEventListener("click", ()=> borrarNota(vRef, v.notas[parseInt(b.dataset.idx,10)]));
     });
+  }
+
+  function pintarAsignacion(v){
+    setTopbar(`${obraNombre} · ${v.etiqueta}`, "Asignar ventana", true);
+    $app().innerHTML = `
+      <div class="card">
+        <h2 style="font-size:19px;">🏷️ Ventana ${esc(v.etiqueta)}</h2>
+        <p class="muted" style="margin-top:4px;margin-bottom:16px;">
+          Este QR todavía no está asignado a ningún hueco del plano. Rellena estos datos según la
+          ventana física que vas a instalar aquí — a partir de ahora este código quedará ligado a ella.
+        </p>
+        ${formularioAsignacionHtml()}
+        <button class="btn btn-primary btn-block" id="btnGuardarAsignacion" style="margin-top:14px;">Asignar y continuar</button>
+      </div>
+    `;
+    document.getElementById("btnGuardarAsignacion").addEventListener("click", ()=> guardarAsignacion(obraId, ventanaId, vRef));
   }
 
   obraRef.get().then(d=>{
@@ -1395,6 +1480,59 @@ function renderVentana(obraId, ventanaId){
     pintar(doc.data());
   }, err=> toast("Error: " + err.message));
   unsubscribers.push(unsub);
+}
+
+// Campos compartidos por la asignación inicial (QR genérico) y la edición posterior de identificación.
+function formularioAsignacionHtml(v){
+  v = v || {};
+  return `
+    <label class="field"><span>Casa</span><input type="text" id="inpAsigCasa" value="${esc(v.casa||"")}" placeholder="Ej: D223" /></label>
+    <label class="field"><span>Planta</span><input type="text" id="inpAsigPlanta" value="${esc(v.planta||"")}" placeholder="Ej: 2" /></label>
+    <label class="field"><span>Número de plano</span><input type="text" id="inpAsigNumero" value="${esc(v.numeroPlano||"")}" placeholder="Ej: 809" /></label>
+    <label class="field"><span>Referencia / modelo</span><input type="text" id="inpAsigReferencia" value="${esc(v.referencia||"")}" placeholder="Ej: VAL 03D" /></label>
+  `;
+}
+
+function abrirEditarAsignacion(obraId, ventanaId, vRef, v){
+  openModal(`
+    <h3>Editar identificación</h3>
+    <p class="muted" style="margin-bottom:14px;">Corrige la casa, planta, número de plano o referencia de esta ventana.</p>
+    ${formularioAsignacionHtml(v)}
+    <button class="btn btn-primary btn-block" id="btnGuardarAsignacion" style="margin-top:10px;">Guardar</button>
+  `);
+  document.getElementById("btnGuardarAsignacion").addEventListener("click", ()=> guardarAsignacion(obraId, ventanaId, vRef));
+}
+
+async function guardarAsignacion(obraId, ventanaId, vRef){
+  const casa = document.getElementById("inpAsigCasa").value.trim();
+  const planta = document.getElementById("inpAsigPlanta").value.trim();
+  const numeroPlano = document.getElementById("inpAsigNumero").value.trim();
+  const referencia = document.getElementById("inpAsigReferencia").value.trim();
+  if(!casa && !numeroPlano){ toast("Indica al menos la casa o el número de plano"); return; }
+
+  if(casa && numeroPlano){
+    try{
+      const dupSnap = await db.collection("obras").doc(obraId).collection("ventanas")
+        .where("casa","==",casa).where("planta","==",planta).where("numeroPlano","==",numeroPlano).get();
+      const otra = dupSnap.docs.find(d=> d.id !== ventanaId);
+      if(otra && !confirmar(`Ya hay otra ventana marcada como Casa ${casa}${planta?", Planta "+planta:""}, Nº ${numeroPlano}. ¿Asignar igualmente?`)) return;
+    }catch(e){ /* si falla la comprobación de duplicados, seguimos igualmente: no es crítico */ }
+  }
+
+  const btn = document.getElementById("btnGuardarAsignacion");
+  if(btn){ btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Guardando…`; }
+  try{
+    await vRef.update({
+      casa, planta, numeroPlano, referencia,
+      asignada: true,
+      actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    toast("Ventana asignada");
+    closeModal();
+  }catch(err){
+    toast("Error: " + err.message);
+    if(btn){ btn.disabled = false; btn.textContent = "Guardar"; }
+  }
 }
 
 async function toggleEtapa(obraId, obraNombre, vRef, ventanaId, ventanaEtiqueta, estadoActual, etapa){
@@ -1414,7 +1552,70 @@ async function toggleEtapa(obraId, obraNombre, vRef, ventanaId, ventanaEtiqueta,
   try{
     await vRef.update({ estado: nuevo, actualizadoEn: firebase.firestore.FieldValue.serverTimestamp() });
     cambiadas.forEach(e => registrarEvento(obraId, obraNombre, ventanaId, ventanaEtiqueta, e, nuevo[e]));
+    // Cada vez que se marca (no desmarca) algo, ofrecemos foto + nota al momento.
+    // Es un aviso fuerte pero saltable: no bloquea si el instalador no tiene foto o conexión.
+    const activadas = cambiadas.filter(e => nuevo[e] === true);
+    if(activadas.length) abrirCapturaRapida(obraId, ventanaId, vRef, activadas);
   }catch(err){ toast("Error guardando: " + err.message); }
+}
+
+// Modal rápido de foto + nota que aparece justo después de marcar una o varias etapas.
+// Pensado para animar (no obligar) a documentar cada avance con foto en el momento: es saltable
+// a propósito, porque en obra a veces no hay cobertura o el instalador va con prisa.
+function abrirCapturaRapida(obraId, ventanaId, vRef, etapasActivadas){
+  const nombres = etapasActivadas.map(e => `${ETAPA_ICONO[e]||""} ${ETAPA_LABEL[e]||e}`).join(", ");
+  openModal(`
+    <h3 style="margin-top:0;">${esc(nombres)}</h3>
+    <p class="muted" style="margin-top:-6px;">Se acaba de marcar. Añade una foto y una nota si hace falta — es opcional, puedes saltarlo.</p>
+    <input type="file" id="inpFotoRapida" accept="image/*" capture="environment" style="display:none;" />
+    <button class="btn btn-block" id="btnFotoRapida" type="button">📷 Añadir foto</button>
+    <div id="fotoRapidaEstado" class="muted" style="margin:6px 0;"></div>
+    <label class="field" style="margin-top:8px;"><span>Nota (opcional)</span>
+      <textarea id="inpNotaRapida" rows="3" placeholder="Ej: falta un tornillo, pendiente de silicona…"></textarea>
+    </label>
+    <div class="btn-row" style="margin-top:10px;">
+      <button class="btn" id="btnSaltarCaptura" type="button">Continuar sin foto</button>
+      <button class="btn btn-primary" id="btnGuardarCaptura" type="button">Guardar y cerrar</button>
+    </div>
+  `);
+
+  let fotoLista = null;
+  document.getElementById("btnFotoRapida").addEventListener("click", ()=> document.getElementById("inpFotoRapida").click());
+  document.getElementById("inpFotoRapida").addEventListener("change", (e)=>{
+    fotoLista = e.target.files && e.target.files[0] ? e.target.files[0] : null;
+    document.getElementById("fotoRapidaEstado").textContent = fotoLista ? `Lista: ${fotoLista.name}` : "";
+  });
+
+  async function guardarYCerrar(){
+    const notaTxt = (document.getElementById("inpNotaRapida").value || "").trim();
+    const btnG = document.getElementById("btnGuardarCaptura");
+    const btnS = document.getElementById("btnSaltarCaptura");
+    if(btnG){ btnG.disabled = true; btnG.innerHTML = `<span class="spin"></span> Guardando…`; }
+    if(btnS){ btnS.disabled = true; }
+    const autor = nombreUsuario() || "—";
+    try{
+      if(fotoLista && CLOUDINARY_OK){
+        const { url, publicId } = await subirArchivoCloudinary(fotoLista);
+        await vRef.update({
+          fotos: firebase.firestore.FieldValue.arrayUnion({ url, publicId, autor, fecha: new Date().toISOString() }),
+          actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
+        });
+      } else if(fotoLista && !CLOUDINARY_OK){
+        toast("Falta configurar Cloudinary: la foto no se pudo subir (ver README.md)");
+      }
+      if(notaTxt){
+        await vRef.update({
+          notas: firebase.firestore.FieldValue.arrayUnion({ texto: notaTxt, autor, fecha: new Date().toISOString() }),
+          actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
+        });
+      }
+    }catch(err){ toast("Aviso: no se pudo guardar la foto/nota (" + err.message + ")"); }
+    closeModal();
+  }
+
+  document.getElementById("btnGuardarCaptura").addEventListener("click", guardarYCerrar);
+  // "Continuar sin foto" también guarda la nota si el instalador escribió algo, pero nunca bloquea.
+  document.getElementById("btnSaltarCaptura").addEventListener("click", guardarYCerrar);
 }
 
 // Registra en el histórico "eventos" quién hizo qué y cuándo (para notificaciones y estadísticas).
@@ -1960,6 +2161,7 @@ function filaExcelVentana(v){
     Instalada: v.estado && v.estado.instalada ? "Sí" : "No",
     Sellada: v.estado && v.estado.sellada ? "Sí" : "No",
     Acristalada: v.estado && v.estado.acristalada ? "Sí" : "No",
+    Composite: v.estado && v.estado.composite ? "Sí" : "No",
     Terminada: v.estado && v.estado.terminada ? "Sí" : "No"
   };
 }
