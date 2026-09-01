@@ -274,7 +274,7 @@
    (gratuito). Instrucciones completas en README.md
    ============================================================ */
 const firebaseConfig = {
- apiKey: "AIzaSyCfMF2O54skQbPWWrU9D8JqEV9XoPh3a2E",
+  apiKey: "AIzaSyCfMF2O54skQbPWWrU9D8JqEV9XoPh3a2E",
   authDomain: "control-obra-70524.firebaseapp.com",
   projectId: "control-obra-70524",
   storageBucket: "control-obra-70524.firebasestorage.app",
@@ -870,13 +870,11 @@ async function crearVentanasDesdeFilas(obraId, filas, numeroInicial){
 async function leerFilasDesdeArchivo(file){
   const buf = await file.arrayBuffer();
   const wb = XLSX.read(buf, { type: "array" });
-  const hoja = wb.Sheets[wb.SheetNames[0]];
-  const filasCrudas = XLSX.utils.sheet_to_json(hoja, { defval: "" });
   const MAPA_COLUMNAS = {
     casa: ["casa", "vivienda", "numero de casa", "nº casa", "n casa", "portal"],
     planta: ["planta", "piso"],
     numero: ["numero", "nº", "n", "numero de ventana", "nº ventana", "ventana", "num", "codigo"],
-    referencia: ["referencia", "ref", "modelo", "tipo"]
+    referencia: ["referencia", "ref", "modelo", "tipo", "tipo ventana", "tipo de ventana"]
   };
   function buscarValor(filaObj, claves){
     for(const key of Object.keys(filaObj)){
@@ -885,14 +883,22 @@ async function leerFilasDesdeArchivo(file){
     }
     return "";
   }
-  return filasCrudas
-    .map(f=>({
-      casa: buscarValor(f, MAPA_COLUMNAS.casa),
-      planta: buscarValor(f, MAPA_COLUMNAS.planta),
-      numero: buscarValor(f, MAPA_COLUMNAS.numero),
-      referencia: buscarValor(f, MAPA_COLUMNAS.referencia)
-    }))
-    .filter(f=> f.casa || f.planta || f.numero || f.referencia); // descarta filas totalmente vacías
+  // Recorre TODAS las hojas del archivo (por ejemplo, una hoja por planta) y junta las ventanas de todas.
+  const filas = [];
+  for(const nombreHoja of wb.SheetNames){
+    const hoja = wb.Sheets[nombreHoja];
+    const filasCrudas = XLSX.utils.sheet_to_json(hoja, { defval: "" });
+    filasCrudas.forEach(f=>{
+      const fila = {
+        casa: buscarValor(f, MAPA_COLUMNAS.casa),
+        planta: buscarValor(f, MAPA_COLUMNAS.planta),
+        numero: buscarValor(f, MAPA_COLUMNAS.numero),
+        referencia: buscarValor(f, MAPA_COLUMNAS.referencia)
+      };
+      if(fila.casa || fila.planta || fila.numero || fila.referencia) filas.push(fila); // descarta filas totalmente vacías
+    });
+  }
+  return filas;
 }
 
 function descargarPlantillaCsv(){
@@ -1216,8 +1222,10 @@ function abrirImportarExcel(obraId, numeroInicial){
     <h3>Importar ventanas desde Excel/CSV</h3>
     <p class="muted" style="margin-bottom:10px;">
       El archivo debe tener una fila por ventana con columnas para <b>casa</b>, <b>planta</b>,
-      <b>número</b> (el que usáis en el plano) y <b>referencia</b> (modelo). No hace falta que se
-      llamen exactamente así ni que vayan en ese orden — la app las reconoce solas.
+      <b>número</b> (el que usáis en el plano, p.ej. "Código") y <b>referencia</b> (modelo, p.ej.
+      "Tipo ventana"). No hace falta que se llamen exactamente así ni que vayan en ese orden — la
+      app las reconoce solas. Si el archivo tiene varias hojas (por ejemplo una por planta), se
+      importan todas a la vez.
     </p>
     <button class="link-btn" id="btnPlantilla" style="margin-bottom:14px;">⬇️ Descargar plantilla de ejemplo</button>
     <label class="field"><span>Archivo (.xlsx, .xls o .csv)</span><input type="file" id="inpArchivo" accept=".xlsx,.xls,.csv" /></label>
