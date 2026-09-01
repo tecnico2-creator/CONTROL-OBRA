@@ -749,10 +749,11 @@ function renderListaObras(){
     // Para cada obra calculamos el progreso a partir de sus ventanas (una lectura puntual, no listener, para no acumular listeners en la lista)
     const filas = await Promise.all(obras.map(async (obra)=>{
       const vSnap = await db.collection("obras").doc(obra.id).collection("ventanas").get();
-      const total = vSnap.size;
-      let checks = 0, terminadas = 0;
+      let total = 0, checks = 0, terminadas = 0;
       vSnap.forEach(vd=>{
         const v = vd.data();
+        if(v.aliasTo) return; // código QR vinculado a otra ventana: no es una ventana física aparte
+        total++;
         checks += pasosCompletados(v.estado);
         if(v.estado && v.estado.terminada) terminadas++;
       });
@@ -981,7 +982,11 @@ function renderObraDetalle(obraId, tabInicial){
     if(!obraData){ return; }
     setTopbar(obraData.nombre || "Obra", obraData.direccion || "", true);
 
-    const total = ventanas.length;
+    // Los códigos QR vinculados a otra ventana ya existente (aliasTo) son solo un "puntero" interno:
+    // su ventana real ya se cuenta y se ve por su propio documento, así que se ocultan aquí para no
+    // duplicar cifras ni aparecer como una ventana fantasma sin casa/planta en los listados.
+    const ventanasVisibles = ventanas.filter(v => !v.aliasTo);
+    const total = ventanasVisibles.length;
     const tabsHtml = `
       <div class="tabs">
         <button data-tab="ventanas" class="${tab==="ventanas"?"active":""}">Ventanas</button>
@@ -1007,14 +1012,16 @@ function renderObraDetalle(obraId, tabInicial){
         b.addEventListener("click", ()=> navegar(`#/obra/${obraId}/${b.dataset.tab}`));
       });
       if(tab === "planos") pintarPlanos();
-      else pintarVentanasGrid(obraId, ventanas);
+      else pintarVentanasGrid(obraId, ventanasVisibles);
       return;
     }
 
-    const checks = ventanas.reduce((n,v)=> n + pasosCompletados(v.estado), 0);
+    const checks = ventanasVisibles.reduce((n,v)=> n + pasosCompletados(v.estado), 0);
     const pct = total ? Math.round((checks/(total*ETAPAS.length))*100) : 0;
     const cuentas = {instalada:0,sellada:0,acristalada:0,composite:0,terminada:0};
-    ventanas.forEach(v=>{ ETAPAS.forEach(e=>{ if(v.estado && v.estado[e]) cuentas[e]++; }); });
+    ventanasVisibles.forEach(v=>{ ETAPAS.forEach(e=>{ if(v.estado && v.estado[e]) cuentas[e]++; }); });
+    // maxNumero usa TODAS las ventanas (incluidos los códigos QR ya vinculados a otra), para no
+    // reutilizar nunca un número/etiqueta que ya existe en la base de datos y machacarlo sin querer.
     const maxNumero = ventanas.reduce((m,v)=> Math.max(m, v.numero||0), 0);
 
     $app().innerHTML = `
@@ -1059,18 +1066,18 @@ function renderObraDetalle(obraId, tabInicial){
     document.getElementById("btnAddVentanas").addEventListener("click", ()=> abrirAddVentanas(obraId, total));
     document.getElementById("btnImportarExcel").addEventListener("click", ()=> abrirImportarExcel(obraId, maxNumero+1));
     document.getElementById("btnGenerarGenericas").addEventListener("click", ()=> abrirGenerarGenericas(obraId, obraData, maxNumero+1));
-    document.getElementById("btnPdfQr").addEventListener("click", ()=> generarPdfQr(obraId, obraData, ventanas));
-    document.getElementById("btnExportExcel").addEventListener("click", ()=> generarExcelCompleto(obraData, ventanas));
-    document.getElementById("btnExportPendientes").addEventListener("click", ()=> abrirExportarPendientes(obraId, obraData, ventanas));
+    document.getElementById("btnPdfQr").addEventListener("click", ()=> generarPdfQr(obraId, obraData, ventanasVisibles));
+    document.getElementById("btnExportExcel").addEventListener("click", ()=> generarExcelCompleto(obraData, ventanasVisibles));
+    document.getElementById("btnExportPendientes").addEventListener("click", ()=> abrirExportarPendientes(obraId, obraData, ventanasVisibles));
     document.getElementById("btnEliminarObra").addEventListener("click", ()=> eliminarObra(obraId, obraData));
     document.querySelectorAll(".tabs button").forEach(b=>{
       b.addEventListener("click", ()=> navegar(`#/obra/${obraId}/${b.dataset.tab}`));
     });
 
-    if(tab === "fotos") pintarFotosNotas(ventanas);
+    if(tab === "fotos") pintarFotosNotas(ventanasVisibles);
     else if(tab === "planos") pintarPlanos();
     else if(tab === "stats") pintarEstadisticasObra();
-    else pintarVentanasGrid(obraId, ventanas);
+    else pintarVentanasGrid(obraId, ventanasVisibles);
   }
 
   function pintarVentanasGrid(obraId, ventanas){
@@ -1398,6 +1405,7 @@ function renderVentana(obraId, ventanaId){
     setTopbar(`${obraNombre} · ${etiquetaCorta(v)}`, descripcionVentana(v), true);
     const estado = v.estado || estadoVacio();
     $app().innerHTML = `
+      <button class="link-btn" id="btnVolverObra" style="margin-bottom:10px;">⬅ Volver a la obra</button>
       <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
           <h2 style="font-size:19px;">Ventana ${esc(etiquetaCorta(v))}</h2>
@@ -1451,6 +1459,7 @@ function renderVentana(obraId, ventanaId){
     document.querySelectorAll(".etapa-row").forEach(row=>{
       row.addEventListener("click", ()=> toggleEtapa(obraId, obraNombre, vRef, ventanaId, etiquetaCorta(v), estado, row.dataset.e));
     });
+    document.getElementById("btnVolverObra").addEventListener("click", ()=> navegar(`#/obra/${obraId}`));
     document.getElementById("btnEditarAsignacion").addEventListener("click", ()=> abrirEditarAsignacion(obraId, ventanaId, vRef, v));
     document.getElementById("btnAddNota").addEventListener("click", ()=> addNota(vRef));
     document.getElementById("btnFoto").addEventListener("click", ()=> document.getElementById("inpFoto").click());
@@ -1466,6 +1475,7 @@ function renderVentana(obraId, ventanaId){
   function pintarAsignacion(v){
     setTopbar(`${obraNombre} · ${v.etiqueta}`, "Asignar ventana", true);
     $app().innerHTML = `
+      <button class="link-btn" id="btnVolverObra" style="margin-bottom:10px;">⬅ Volver a la obra</button>
       <div class="card">
         <h2 style="font-size:19px;">🏷️ Ventana ${esc(v.etiqueta)}</h2>
         <p class="muted" style="margin-top:4px;margin-bottom:16px;">
@@ -1476,6 +1486,7 @@ function renderVentana(obraId, ventanaId){
         <button class="btn btn-primary btn-block" id="btnGuardarAsignacion" style="margin-top:14px;">Asignar y continuar</button>
       </div>
     `;
+    document.getElementById("btnVolverObra").addEventListener("click", ()=> navegar(`#/obra/${obraId}`));
     document.getElementById("btnGuardarAsignacion").addEventListener("click", ()=> guardarAsignacion(obraId, ventanaId, vRef, true));
   }
 
@@ -1516,69 +1527,133 @@ function abrirEditarAsignacion(obraId, ventanaId, vRef, v){
   document.getElementById("btnGuardarAsignacion").addEventListener("click", ()=> guardarAsignacion(obraId, ventanaId, vRef, false));
 }
 
+// Busca ventanas ya existentes que puedan coincidir con los datos introducidos, para poder vincular
+// un QR genérico a una de ellas en vez de duplicarla. Si solo se conoce el número de plano (sin la
+// casa) puede haber varias coincidencias — el mismo número se suele repetir una vez por cada casa —
+// así que se devuelven todas para que el usuario elija cuál es.
+async function buscarVentanasCoincidentes(obraId, ventanaId, { casa, planta, numeroPlano }){
+  if(!numeroPlano && !casa) return [];
+  try{
+    let q = db.collection("obras").doc(obraId).collection("ventanas");
+    if(numeroPlano) q = q.where("numeroPlano","==",numeroPlano);
+    if(casa) q = q.where("casa","==",casa);
+    if(casa && planta) q = q.where("planta","==",planta);
+    const snap = await q.get();
+    return snap.docs.filter(d=> d.id !== ventanaId && !d.data().aliasTo);
+  }catch(e){ return []; }
+}
+
+async function vincularVentana(obraId, ventanaId, vRef, existenteId){
+  try{
+    await vRef.update({
+      aliasTo: existenteId,
+      asignada: true,
+      actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    // Este código ya no cuenta como una ventana física aparte: era un QR genérico en blanco.
+    db.collection("obras").doc(obraId).update({ numVentanas: firebase.firestore.FieldValue.increment(-1) }).catch(()=>{});
+    toast("Código QR vinculado a la ventana existente");
+    closeModal();
+    navegar(`#/ventana/${obraId}/${existenteId}`);
+  }catch(err){ toast("Error: " + err.message); }
+}
+
+async function guardarVentanaNueva(obraId, ventanaId, vRef, datos){
+  try{
+    await vRef.update({
+      casa: datos.casa, planta: datos.planta, numeroPlano: datos.numeroPlano, referencia: datos.referencia,
+      asignada: true,
+      actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    toast("Ventana asignada");
+    closeModal();
+  }catch(err){ toast("Error: " + err.message); }
+}
+
+// Cuando el mismo número de plano coincide con varias ventanas ya existentes (por ejemplo, casas
+// distintas que reutilizan la misma numeración de ventana), se deja elegir cuál es la correcta en
+// vez de adivinar.
+function abrirSelectorVinculo(obraId, ventanaId, vRef, candidatos, datos){
+  const lista = candidatos.slice(0, 25);
+  openModal(`
+    <h3>¿Cuál de estas es la ventana?</h3>
+    <p class="muted" style="margin-bottom:14px;">
+      Hay ${candidatos.length} ventanas ya existentes con el número ${esc(datos.numeroPlano)}${datos.casa?` (y casa ${esc(datos.casa)})`:""}.
+      Elige la que corresponda para vincular este código QR a ella, o crea una nueva si ninguna es correcta.
+    </p>
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      ${lista.map((d,i)=>{
+        const v = d.data();
+        return `<button class="btn btn-outline" data-idx="${i}" style="text-align:left;">
+          Casa ${esc(v.casa||"—")}${v.planta?", Planta "+esc(v.planta):""}${v.referencia?" · "+esc(v.referencia):""}
+        </button>`;
+      }).join("")}
+    </div>
+    ${candidatos.length > lista.length ? `<p class="muted" style="margin-top:8px;">Y ${candidatos.length-lista.length} más — añade también la casa para acotar la búsqueda.</p>` : ""}
+    <button class="btn btn-secondary btn-block" id="btnNingunaCoincide" style="margin-top:14px;">Ninguna: crear ventana nueva</button>
+  `);
+  document.querySelectorAll("[data-idx]").forEach(b=>{
+    b.addEventListener("click", ()=> vincularVentana(obraId, ventanaId, vRef, lista[parseInt(b.dataset.idx,10)].id));
+  });
+  document.getElementById("btnNingunaCoincide").addEventListener("click", ()=> guardarVentanaNueva(obraId, ventanaId, vRef, datos));
+}
+
 // permitirVincular: true solo en la primera asignación de un QR genérico (pintarAsignacion). Si en ese
-// caso los datos coinciden con una ventana que ya existe (normalmente importada del Excel), este código
-// QR se vincula a ella (aliasTo) en vez de crear una ventana nueva duplicada. Al editar una ventana ya
-// asignada (abrirEditarAsignacion) no se vincula: solo se avisa de la coincidencia, por si es un error.
+// caso los datos coinciden con una o varias ventanas que ya existen (normalmente importadas del Excel),
+// este código QR se vincula a la que corresponda (aliasTo) en vez de crear una ventana nueva duplicada.
+// Basta con conocer el número de plano (no hace falta la casa) para que la app busque la coincidencia.
+// Al editar una ventana ya asignada (abrirEditarAsignacion) no se vincula: solo se avisa, por si es un error.
 async function guardarAsignacion(obraId, ventanaId, vRef, permitirVincular){
   const casa = document.getElementById("inpAsigCasa").value.trim();
   const planta = document.getElementById("inpAsigPlanta").value.trim();
   const numeroPlano = document.getElementById("inpAsigNumero").value.trim();
   const referencia = document.getElementById("inpAsigReferencia").value.trim();
   if(!casa && !numeroPlano){ toast("Indica al menos la casa o el número de plano"); return; }
+  const datos = { casa, planta, numeroPlano, referencia };
 
   const btn = document.getElementById("btnGuardarAsignacion");
+  const labelOriginal = btn ? btn.textContent : "Guardar";
+  if(btn){ btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Buscando…`; }
 
-  let existente = null;
-  if(casa && numeroPlano){
-    try{
-      const dupSnap = await db.collection("obras").doc(obraId).collection("ventanas")
-        .where("casa","==",casa).where("planta","==",planta).where("numeroPlano","==",numeroPlano).get();
-      existente = dupSnap.docs.find(d=> d.id !== ventanaId && !d.data().aliasTo) || null;
-    }catch(e){ /* si falla la comprobación, seguimos igualmente: no es crítico */ }
+  const candidatos = await buscarVentanasCoincidentes(obraId, ventanaId, { casa, planta, numeroPlano });
+
+  if(!candidatos.length){
+    if(btn){ btn.innerHTML = `<span class="spin"></span> Guardando…`; }
+    await guardarVentanaNueva(obraId, ventanaId, vRef, datos);
+    if(btn){ btn.disabled = false; btn.textContent = labelOriginal; }
+    return;
   }
 
-  if(existente && permitirVincular){
+  if(!permitirVincular){
+    // Edición de una ventana ya real: solo avisamos, no vinculamos automáticamente (evita fusionar
+    // por accidente el historial de dos ventanas distintas).
+    const c = candidatos[0].data();
+    if(!confirmar(`Ya hay otra ventana marcada como Casa ${c.casa||"—"}${c.planta?", Planta "+c.planta:""}, Nº ${c.numeroPlano||numeroPlano}. ¿Guardar igualmente?`)){
+      if(btn){ btn.disabled = false; btn.textContent = labelOriginal; }
+      return;
+    }
+    if(btn){ btn.innerHTML = `<span class="spin"></span> Guardando…`; }
+    await guardarVentanaNueva(obraId, ventanaId, vRef, datos);
+    if(btn){ btn.disabled = false; btn.textContent = labelOriginal; }
+    return;
+  }
+
+  if(btn){ btn.disabled = false; btn.textContent = labelOriginal; }
+
+  if(candidatos.length === 1){
+    const c = candidatos[0].data();
     const vincular = confirmar(
-      `Ya existe la ventana Casa ${casa}${planta?", Planta "+planta:""}, Nº ${numeroPlano} (probablemente importada del Excel).\n\n` +
+      `Ya existe la ventana Casa ${c.casa||"—"}${c.planta?", Planta "+c.planta:""}, Nº ${c.numeroPlano||numeroPlano}${c.referencia?" ("+c.referencia+")":""} (probablemente importada del Excel).\n\n` +
       `Aceptar = vincular este código QR a esa ventana ya existente (recomendado, evita duplicados).\n` +
       `Cancelar = crear esta como una ventana nueva independiente.`
     );
-    if(vincular){
-      if(btn){ btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Guardando…`; }
-      try{
-        await vRef.update({
-          aliasTo: existente.id,
-          asignada: true,
-          actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
-        });
-        toast("Código QR vinculado a la ventana existente");
-        closeModal();
-        navegar(`#/ventana/${obraId}/${existente.id}`);
-      }catch(err){
-        toast("Error: " + err.message);
-        if(btn){ btn.disabled = false; btn.textContent = "Guardar"; }
-      }
-      return;
-    }
-    // si cancela, sigue abajo y se guarda como ventana nueva independiente
-  } else if(existente && !permitirVincular){
-    if(!confirmar(`Ya hay otra ventana marcada como Casa ${casa}${planta?", Planta "+planta:""}, Nº ${numeroPlano}. ¿Guardar igualmente?`)) return;
+    if(vincular){ await vincularVentana(obraId, ventanaId, vRef, candidatos[0].id); return; }
+    await guardarVentanaNueva(obraId, ventanaId, vRef, datos);
+    return;
   }
 
-  if(btn){ btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Guardando…`; }
-  try{
-    await vRef.update({
-      casa, planta, numeroPlano, referencia,
-      asignada: true,
-      actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
-    });
-    toast("Ventana asignada");
-    closeModal();
-  }catch(err){
-    toast("Error: " + err.message);
-    if(btn){ btn.disabled = false; btn.textContent = "Guardar"; }
-  }
+  // Varias ventanas comparten ese número (normal si no se indicó la casa): que el usuario elija cuál es.
+  abrirSelectorVinculo(obraId, ventanaId, vRef, candidatos, datos);
 }
 
 async function toggleEtapa(obraId, obraNombre, vRef, ventanaId, ventanaEtiqueta, estadoActual, etapa){
