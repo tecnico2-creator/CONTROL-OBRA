@@ -1,0 +1,2045 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Control de Instalación</title>
+<meta name="theme-color" content="#166534" />
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="icon-192.png" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="apple-mobile-web-app-title" content="Control Obras" />
+<style>
+  :root{
+    --primario:#15803d;
+    --primario-osc:#14532d;
+    --primario-claro:#dcfce7;
+    --gris-100:#f4f5f7;
+    --gris-200:#e5e7eb;
+    --gris-400:#9ca3af;
+    --gris-600:#4b5563;
+    --gris-800:#1f2937;
+    --rojo:#dc2626;
+    --amarillo:#d97706;
+    --naranja:#ea580c;
+    --indigo:#4f46e5;
+    --verde:#16a34a;
+    --radio:12px;
+    --sombra:0 1px 3px rgba(0,0,0,.1), 0 1px 2px rgba(0,0,0,.06);
+    --sombra-lg:0 10px 30px rgba(20,83,45,.14), 0 2px 8px rgba(0,0,0,.06);
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:var(--gris-100);
+    color:var(--gris-800);
+    -webkit-tap-highlight-color:transparent;
+    padding-bottom:env(safe-area-inset-bottom);
+  }
+  h1,h2,h3,p{margin:0;}
+  button{font-family:inherit;}
+  a{color:inherit;}
+  #topbar{
+    position:sticky;top:0;z-index:20;
+    background:linear-gradient(135deg,var(--primario),var(--primario-osc));
+    color:#fff;
+    padding-top:calc(14px + env(safe-area-inset-top));
+    padding:14px 16px calc(14px + env(safe-area-inset-top)) 16px;
+    padding-top:calc(14px + env(safe-area-inset-top));
+    display:flex;align-items:center;gap:10px;
+    box-shadow:var(--sombra);
+  }
+  #topbar .back{
+    background:rgba(255,255,255,.16);border:none;color:#fff;
+    width:36px;height:36px;border-radius:10px;font-size:18px;
+    display:flex;align-items:center;justify-content:center;flex-shrink:0;
+  }
+  #topbar .titulo{flex:1;min-width:0;}
+  #topbar .titulo h1{font-size:17px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  #topbar .titulo .sub{font-size:12px;opacity:.85;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  #topbar .icon-btn{
+    background:rgba(255,255,255,.16);border:none;color:#fff;position:relative;
+    width:36px;height:36px;border-radius:10px;font-size:16px;flex-shrink:0;
+  }
+  #bellDot{
+    display:none;position:absolute;top:5px;right:6px;width:8px;height:8px;
+    border-radius:50%;background:#f87171;box-shadow:0 0 0 2px var(--primario-osc);
+  }
+  #app{max-width:760px;margin:0 auto;padding:16px;padding-bottom:60px;}
+  .card{
+    background:#fff;border-radius:var(--radio);box-shadow:var(--sombra);
+    padding:16px;margin-bottom:14px;
+  }
+  .btn{
+    display:inline-flex;align-items:center;justify-content:center;gap:8px;
+    border:none;border-radius:10px;padding:12px 16px;font-size:15px;font-weight:600;
+    cursor:pointer;min-height:46px;
+  }
+  .btn-block{display:flex;width:100%;}
+  .btn-primary{background:var(--primario);color:#fff;}
+  .btn-primary:active{background:var(--primario-osc);}
+  .btn-secondary{background:var(--gris-200);color:var(--gris-800);}
+  .btn-danger{background:#fee2e2;color:var(--rojo);}
+  .btn-outline{background:#fff;color:var(--primario);border:1.5px solid var(--primario);}
+  .btn-sm{padding:8px 12px;font-size:13px;min-height:36px;}
+  .btn[disabled]{opacity:.55;pointer-events:none;}
+  .btn-row{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px;}
+  .btn-row .btn{flex:1 1 150px;}
+  input[type=text],input[type=number],input[type=password],input[type=email],input[type=file],textarea,select{
+    width:100%;border:1.5px solid var(--gris-200);border-radius:10px;
+    padding:11px 12px;font-size:15px;background:#fff;color:var(--gris-800);
+    font-family:inherit;
+  }
+  input:focus,textarea:focus,select:focus{outline:none;border-color:var(--primario);}
+  textarea{resize:vertical;min-height:70px;}
+  label.field{display:block;margin-bottom:14px;}
+  label.field span{display:block;font-size:13px;font-weight:600;color:var(--gris-600);margin-bottom:6px;}
+  .empty{
+    text-align:center;color:var(--gris-400);padding:36px 16px;font-size:14px;
+  }
+  .obra-item{
+    display:flex;align-items:center;gap:12px;padding:14px;background:#fff;
+    border-radius:var(--radio);box-shadow:var(--sombra);margin-bottom:10px;cursor:pointer;
+  }
+  .obra-item .avatar{
+    width:44px;height:44px;border-radius:10px;background:linear-gradient(135deg,var(--primario),var(--primario-osc));color:#fff;
+    display:flex;align-items:center;justify-content:center;font-weight:700;font-size:16px;flex-shrink:0;
+  }
+  .obra-item .info{flex:1;min-width:0;}
+  .obra-item .info h3{font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .obra-item .info p{font-size:12.5px;color:var(--gris-600);margin-top:2px;}
+  .obra-item .pct{font-size:13px;font-weight:700;color:var(--primario);flex-shrink:0;}
+  .progress-wrap{background:var(--gris-200);border-radius:20px;height:10px;overflow:hidden;margin-top:8px;}
+  .progress-bar{height:100%;background:linear-gradient(90deg,var(--primario),var(--verde));border-radius:20px;transition:width .3s;}
+  .stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:14px;}
+  .stat{background:var(--gris-100);border-radius:10px;padding:10px 6px;text-align:center;}
+  .stat .n{font-size:18px;font-weight:800;}
+  .stat .l{font-size:10.5px;color:var(--gris-600);margin-top:2px;line-height:1.2;}
+  .stat.instalada .n{color:var(--amarillo);}
+  .stat.sellada .n{color:var(--naranja);}
+  .stat.acristalada .n{color:var(--indigo);}
+  .stat.terminada .n{color:var(--verde);}
+  .pctbig{font-size:40px;font-weight:800;color:var(--primario);line-height:1;}
+  .tabs{display:flex;gap:6px;margin-bottom:14px;background:#fff;border-radius:10px;padding:4px;box-shadow:var(--sombra);overflow-x:auto;}
+  .tabs button{flex:1;border:none;background:transparent;padding:9px 4px;border-radius:8px;font-size:13.5px;font-weight:600;color:var(--gris-600);white-space:nowrap;}
+  .tabs button.active{background:var(--primario);color:#fff;}
+  .vgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(78px,1fr));gap:10px;}
+  .vchip{
+    background:#fff;border-radius:10px;box-shadow:var(--sombra);padding:10px 6px;
+    text-align:center;cursor:pointer;border-top:5px solid var(--gris-400);position:relative;
+  }
+  .vchip.st-instalada{border-top-color:var(--amarillo);}
+  .vchip.st-sellada{border-top-color:var(--naranja);}
+  .vchip.st-acristalada{border-top-color:var(--indigo);}
+  .vchip.st-terminada{border-top-color:var(--verde);background:#f0fdf4;}
+  .vchip .num{font-weight:800;font-size:15px;}
+  .vchip .et{font-size:9.5px;color:var(--gris-600);margin-top:2px;}
+  .vchip .badges{position:absolute;top:4px;right:4px;display:flex;gap:2px;}
+  .vchip .badges span{font-size:9px;}
+  .etapa-row{
+    display:flex;align-items:center;gap:12px;padding:14px;border-radius:12px;
+    background:var(--gris-100);margin-bottom:10px;
+  }
+  .etapa-row .chk{
+    width:28px;height:28px;border-radius:8px;border:2px solid var(--gris-400);
+    flex-shrink:0;display:flex;align-items:center;justify-content:center;background:#fff;font-size:16px;
+  }
+  .etapa-row.checked .chk{background:var(--verde);border-color:var(--verde);color:#fff;}
+  .etapa-row .txt{flex:1;}
+  .etapa-row .txt b{font-size:15px;}
+  .etapa-row .txt small{display:block;color:var(--gris-600);font-size:12px;}
+  .feed-item{border-bottom:1px solid var(--gris-200);padding:12px 0;}
+  .feed-item:last-child{border-bottom:none;}
+  .feed-item .meta{font-size:12px;color:var(--gris-600);margin-bottom:5px;display:flex;justify-content:space-between;gap:8px;}
+  .feed-item .meta .who{font-weight:700;color:var(--gris-800);}
+  .feed-item .txt{font-size:14.5px;white-space:pre-wrap;}
+  .foto-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px;}
+  .foto-grid img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:10px;background:var(--gris-200);}
+  .foto-item{position:relative;}
+  .foto-item .del{
+    position:absolute;top:4px;right:4px;background:rgba(0,0,0,.55);color:#fff;border:none;
+    width:22px;height:22px;border-radius:6px;font-size:12px;
+  }
+  .nota-item{background:var(--gris-100);border-radius:10px;padding:10px 12px;margin-bottom:8px;position:relative;}
+  .nota-item .del{position:absolute;top:8px;right:8px;background:none;border:none;color:var(--gris-400);font-size:12px;}
+  #reader{width:100%;border-radius:12px;overflow:hidden;background:#000;min-height:260px;}
+  #toast{
+    position:fixed;left:50%;bottom:24px;transform:translateX(-50%);
+    background:#111827;color:#fff;padding:11px 18px;border-radius:24px;font-size:13.5px;
+    box-shadow:0 6px 20px rgba(0,0,0,.25);z-index:100;opacity:0;pointer-events:none;transition:opacity .25s, bottom .25s;
+    max-width:88vw;text-align:center;
+  }
+  #toast.show{opacity:1;bottom:34px;}
+  .modal-bg{
+    position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:flex-end;
+    justify-content:center;z-index:200;
+  }
+  .modal-box{
+    background:#fff;border-radius:16px 16px 0 0;padding:20px;width:100%;max-width:480px;
+    max-height:85vh;overflow-y:auto;
+  }
+  @media (min-width:560px){
+    .modal-bg{align-items:center;}
+    .modal-box{border-radius:16px;}
+  }
+  .modal-box h3{font-size:17px;margin-bottom:14px;}
+  .setup-banner{
+    background:#fef3c7;border:1.5px solid #f59e0b;border-radius:12px;padding:16px;margin-bottom:14px;font-size:13.5px;line-height:1.5;
+  }
+  .setup-banner code{background:#fff;padding:2px 5px;border-radius:5px;font-size:12px;}
+  .spin{
+    width:16px;height:16px;border:2.5px solid rgba(255,255,255,.4);border-top-color:#fff;
+    border-radius:50%;display:inline-block;animation:spin .7s linear infinite;
+  }
+  .spin-dark{border-color:rgba(0,0,0,.15);border-top-color:var(--primario);}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .section-title{font-size:13px;font-weight:700;color:var(--gris-600);text-transform:uppercase;letter-spacing:.04em;margin:18px 0 8px 2px;}
+  .section-title:first-child{margin-top:0;}
+  .muted{color:var(--gris-600);font-size:13px;}
+  .link-btn{background:none;border:none;color:var(--primario);font-weight:600;font-size:13.5px;padding:6px 0;}
+  .center{text-align:center;}
+  hr.sep{border:none;border-top:1px solid var(--gris-200);margin:16px 0;}
+  .brand{padding:8px 0 20px 0;}
+  .brand-logo{
+    width:56px;height:56px;border-radius:16px;margin:0 auto 12px auto;
+    background:linear-gradient(135deg,var(--primario),var(--primario-osc));
+    display:flex;align-items:center;justify-content:center;font-size:28px;
+    box-shadow:var(--sombra-lg);
+  }
+  .brand h2{font-size:20px;font-weight:800;color:var(--gris-800);}
+  .brand p{margin-top:4px;}
+  .login-card{max-width:420px;margin:24px auto 0 auto;}
+  .badge-rol{
+    display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700;
+    vertical-align:middle;
+  }
+  .badge-rol.admin{background:var(--primario-claro);color:var(--primario-osc);}
+  .badge-rol.instalador{background:#e0e7ff;color:#3730a3;}
+  .badge-rol.inactivo{background:#fee2e2;color:var(--rojo);margin-left:6px;}
+  .userrow{
+    display:flex;align-items:center;gap:10px;padding:12px 0;border-bottom:1px solid var(--gris-200);flex-wrap:wrap;
+  }
+  .userrow:last-child{border-bottom:none;}
+  .userrow .info{flex:1;min-width:150px;}
+  .userrow .info h3{font-size:14.5px;font-weight:700;}
+  .stat-mini{display:flex;gap:10px;font-size:12.5px;color:var(--gris-600);flex-wrap:wrap;}
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <button class="back" id="btnBack" style="display:none;">←</button>
+  <div class="titulo">
+    <h1 id="tbTitulo">Control de Instalación</h1>
+    <div class="sub" id="tbSub"></div>
+  </div>
+  <button class="icon-btn" id="btnNotif" title="Notificaciones" style="display:none;">
+    🔔<span id="bellDot"></span>
+  </button>
+  <button class="icon-btn" id="btnPerfil" title="Mi cuenta" style="display:none;">👤</button>
+</div>
+
+<main id="app">
+  <div class="center" style="padding:60px 0;">
+    <div class="spin spin-dark" style="width:28px;height:28px;"></div>
+    <p class="muted" style="margin-top:10px;">Cargando…</p>
+  </div>
+</main>
+
+<div id="toast"></div>
+<div id="modalRoot"></div>
+
+<!-- Firebase (compat SDK) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<!-- Generación de QR -->
+<script src="https://cdn.jsdelivr.net/npm/davidshimjs-qrcodejs@0.0.2/qrcode.min.js"></script>
+<!-- Generación de PDF -->
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+<!-- Lectura de QR con cámara -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<!-- Lectura/escritura de Excel/CSV -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+<script>
+"use strict";
+
+/* ============================================================
+   CONFIGURACIÓN DE FIREBASE
+   Sustituye estos valores por los de tu propio proyecto Firebase
+   (gratuito). Instrucciones completas en README.md
+   ============================================================ */
+const firebaseConfig = {
+ apiKey: "AIzaSyCfMF2O54skQbPWWrU9D8JqEV9XoPh3a2E",
+  authDomain: "control-obra-70524.firebaseapp.com",
+  projectId: "control-obra-70524",
+  storageBucket: "control-obra-70524.firebasestorage.app",
+  messagingSenderId: "97964883008",
+  appId: "1:97964883008:web:53fb05438dcdab921133a5"
+};
+
+const CONFIG_OK = !Object.values(firebaseConfig).some(v => String(v).startsWith("TU_"));
+
+/* ============================================================
+   CONFIGURACIÓN DE CLOUDINARY (para fotos y planos)
+   Alternativa gratuita sin tarjeta a Firebase Storage.
+   Sustituye estos dos valores por los de tu propia cuenta Cloudinary
+   (gratis, sin tarjeta). Instrucciones completas en README.md
+   ============================================================ */
+const CLOUDINARY_CONFIG = {
+  cloudName: "vcjtar9m",
+  uploadPreset: "control_obra"
+};
+const CLOUDINARY_OK = !CLOUDINARY_CONFIG.cloudName.startsWith("TU_") && !CLOUDINARY_CONFIG.uploadPreset.startsWith("TU_");
+
+/* ============================================================
+   CÓDIGO DE ACCESO PARA CREAR LA PRIMERA CUENTA DE ADMINISTRADOR
+   Solo hace falta una vez, para dar de alta la primera cuenta de tu
+   empresa (normalmente la tuya). Las siguientes cuentas (instaladores
+   u otros administradores) se crean ya desde dentro de la app, en
+   "Usuarios", sin necesidad de este código. Cámbialo por uno propio
+   antes de desplegar la app. Instrucciones en README.md
+   ============================================================ */
+const ADMIN_PIN = "1926";
+
+/* ============================================================
+   NOMBRE DE LA APP (se muestra en la pantalla de inicio y el login)
+   ============================================================ */
+const NOMBRE_APP = "Control de Instalación";
+
+/* ============================================================
+   CONSTANTES DE DOMINIO
+   ============================================================ */
+const ETAPAS = ["instalada", "sellada", "acristalada", "terminada"];
+const ETAPA_LABEL = { instalada: "Instalada", sellada: "Sellada", acristalada: "Acristalada", terminada: "Terminada" };
+const ETAPA_ICONO = { instalada: "🪟", sellada: "🧴", acristalada: "🔷", terminada: "✅" };
+
+function estadoVacio(){ return { instalada:false, sellada:false, acristalada:false, terminada:false }; }
+
+// Devuelve la etapa más avanzada alcanzada (para colorear), o null si ninguna
+function ultimaEtapa(estado){
+  let last = null;
+  for(const e of ETAPAS){ if(estado && estado[e]) last = e; }
+  return last;
+}
+function pasosCompletados(estado){
+  if(!estado) return 0;
+  return ETAPAS.reduce((n,e)=> n + (estado[e] ? 1 : 0), 0);
+}
+
+// Una ventana tiene datos "avanzados" (casa/planta/referencia) cuando viene de una importación Excel/CSV
+function tieneDatosAvanzados(v){ return !!(v.casa || v.planta || v.referencia || v.numeroPlano); }
+
+// Etiqueta corta para las tarjetas y el QR: el número del plano si existe, si no el V0001 interno
+function etiquetaCorta(v){ return (v.numeroPlano && String(v.numeroPlano).trim()) || v.etiqueta; }
+
+// Línea descriptiva para la pantalla de la ventana: "Casa 12 · Planta 2 · Ref. PVC-120x150"
+function descripcionVentana(v){
+  const partes = [];
+  if(v.casa) partes.push(`Casa ${v.casa}`);
+  if(v.planta) partes.push(`Planta ${v.planta}`);
+  if(v.referencia) partes.push(`Ref. ${v.referencia}`);
+  return partes.join(" · ");
+}
+
+// Comparador "natural" (Casa 2 antes que Casa 10) para ordenar casas/plantas/números de texto
+function compararNatural(a, b){
+  return String(a ?? "").localeCompare(String(b ?? ""), "es", { numeric: true, sensitivity: "base" });
+}
+
+// Da un rango numérico a la planta para que "Baja"/"Sótano" ordenen antes que "1", "2"...
+function rangoPlanta(p){
+  const n = normalizarCabecera(p);
+  if(/sotano|garaje/.test(n)) return -2;
+  if(/^(baja|bajo|pb)\b/.test(n) || n.includes("planta baja")) return -1;
+  const num = parseFloat(n);
+  return isNaN(num) ? 999 : num; // plantas con nombres raros van al final
+}
+function compararPlanta(a, b){
+  return (rangoPlanta(a) - rangoPlanta(b)) || compararNatural(a, b);
+}
+
+function ordenarVentanas(lista){
+  return [...lista].sort((a,b)=>
+    compararNatural(a.casa, b.casa) ||
+    compararPlanta(a.planta, b.planta) ||
+    compararNatural(a.numeroPlano || a.etiqueta, b.numeroPlano || b.etiqueta)
+  );
+}
+
+// Quita tildes y pasa a minúsculas, para reconocer cabeceras de columnas del Excel sin importar cómo las escriban
+function normalizarCabecera(s){
+  return String(s||"").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"").trim();
+}
+
+// Lista de plantas distintas presentes en una obra, ordenadas
+function plantasDisponibles(ventanas){
+  return [...new Set(ventanas.map(v=>v.planta).filter(Boolean))].sort(compararPlanta);
+}
+function filtrarPorPlanta(ventanas, planta){
+  return planta ? ventanas.filter(v=>v.planta===planta) : ventanas;
+}
+
+/* ============================================================
+   ESTADO GLOBAL
+   ============================================================ */
+let app, db, auth;
+let currentUser = null;      // objeto de Firebase Auth
+let currentUserData;         // undefined = cargando, null = sin ficha en "usuarios", objeto = cargado
+let usuarioUnsub = null;     // listener de usuarios/{uid}, vive fuera del ciclo de rutas
+let notifUnsub = null;       // listener de notificaciones en vivo
+let notifBaseline = null;
+let notifVistos = new Set();
+let notifNuevas = false;
+let unsubscribers = []; // listeners activos de la pantalla actual, se limpian al cambiar de ruta
+let qrHidden = null; // contenedor oculto para generar QR
+
+function esAdmin(){ return !!(currentUserData && currentUserData.rol === "admin"); }
+function nombreUsuario(){ return currentUserData ? (currentUserData.nombre || "") : ""; }
+
+/* ============================================================
+   UTILIDADES UI
+   ============================================================ */
+const $app = () => document.getElementById("app");
+
+function toast(msg){
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(()=> t.classList.remove("show"), 2600);
+}
+
+function esc(s){
+  return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+function fechaCorta(iso){
+  if(!iso) return "";
+  const d = new Date(iso);
+  if(isNaN(d)) return "";
+  return d.toLocaleDateString("es-ES",{day:"2-digit",month:"2-digit",year:"2-digit"}) + " " +
+         d.toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"});
+}
+
+function slug(s){
+  return String(s||"obra").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"")
+    .replace(/[^a-z0-9]+/g,"_").replace(/^_+|_+$/g,"") || "obra";
+}
+
+function closeModal(){
+  document.getElementById("modalRoot").innerHTML = "";
+}
+
+function openModal(html){
+  document.getElementById("modalRoot").innerHTML =
+    `<div class="modal-bg" id="modalBg"><div class="modal-box">${html}</div></div>`;
+  document.getElementById("modalBg").addEventListener("click", (e)=>{
+    if(e.target.id === "modalBg") closeModal();
+  });
+}
+
+function confirmar(msg){ return window.confirm(msg); }
+
+function setTopbar(titulo, sub, mostrarBack){
+  document.getElementById("tbTitulo").textContent = titulo;
+  document.getElementById("tbSub").textContent = sub || "";
+  document.getElementById("btnBack").style.display = mostrarBack ? "flex" : "none";
+}
+
+function limpiarListeners(){
+  unsubscribers.forEach(u=>{ try{ u(); }catch(e){} });
+  unsubscribers = [];
+}
+
+// Traduce los códigos de error más comunes de Firebase Auth a mensajes en español
+function traducirErrorAuth(err){
+  const map = {
+    "auth/wrong-password":"Contraseña incorrecta.",
+    "auth/user-not-found":"No existe ninguna cuenta con ese correo.",
+    "auth/invalid-email":"Correo electrónico no válido.",
+    "auth/too-many-requests":"Demasiados intentos. Espera un momento e inténtalo de nuevo.",
+    "auth/email-already-in-use":"Ya existe una cuenta con ese correo.",
+    "auth/weak-password":"La contraseña debe tener al menos 6 caracteres.",
+    "auth/invalid-credential":"Correo o contraseña incorrectos.",
+    "auth/missing-password":"Escribe una contraseña.",
+    "auth/user-disabled":"Esta cuenta ha sido deshabilitada."
+  };
+  return map[err.code] || ("Error: " + err.message);
+}
+
+/* ============================================================
+   ENRUTADO (hash-based)
+   #/                              -> lista de obras
+   #/nueva                         -> nueva obra
+   #/usuarios                      -> gestión de usuarios (admin)
+   #/estadisticas                  -> estadísticas por instalador (admin)
+   #/obra/{obraId}                 -> detalle de obra (tab ventanas)
+   #/obra/{obraId}/fotos           -> detalle de obra (tab fotos y notas)
+   #/obra/{obraId}/planos          -> detalle de obra (tab planos)
+   #/obra/{obraId}/stats           -> detalle de obra (tab estadísticas)
+   #/ventana/{obraId}/{ventanaId}  -> detalle de ventana
+   #/scan                          -> escáner de QR
+   ============================================================ */
+function navegar(hash){ location.hash = hash; }
+
+function route(){
+  limpiarListeners();
+  closeModal();
+
+  if(!CONFIG_OK){ renderSetupNecesario(); return; }
+  if(!currentUser){ actualizarTopbarIconos(); renderLogin(); return; }
+  if(currentUserData === undefined){
+    setTopbar(NOMBRE_APP, "", false);
+    $app().innerHTML = `<div class="center" style="padding:60px 0;"><div class="spin spin-dark" style="width:28px;height:28px;"></div><p class="muted" style="margin-top:10px;">Cargando tu cuenta…</p></div>`;
+    return;
+  }
+  if(currentUserData === null){ actualizarTopbarIconos(); renderCuentaNoConfigurada(); return; }
+  if(currentUserData.activo === false){ actualizarTopbarIconos(); renderCuentaDesactivada(); return; }
+
+  actualizarTopbarIconos();
+
+  const hash = location.hash.replace(/^#\/?/, "");
+  const parts = hash.split("/").filter(Boolean);
+
+  if(parts[0] === "nueva"){ if(!esAdmin()){ navegar("#/"); return; } setTopbar("Nueva obra","",true); renderNuevaObra(); }
+  else if(parts[0] === "usuarios"){ if(!esAdmin()){ navegar("#/"); return; } setTopbar("Usuarios","Cuentas de tu equipo",true); renderUsuarios(); }
+  else if(parts[0] === "estadisticas"){ if(!esAdmin()){ navegar("#/"); return; } setTopbar("Estadísticas","Actividad por instalador",true); renderEstadisticas(); }
+  else if(parts[0] === "obra" && parts[1]){ renderObraDetalle(parts[1], parts[2]); }
+  else if(parts[0] === "ventana" && parts[1] && parts[2]){ renderVentana(parts[1], parts[2]); }
+  else if(parts[0] === "scan"){ setTopbar("Escanear QR","",true); renderScanner(); }
+  else { setTopbar(NOMBRE_APP,"Control de instalación",false); renderListaObras(); }
+}
+
+function actualizarTopbarIconos(){
+  const admin = esAdmin();
+  document.getElementById("btnPerfil").style.display = (currentUser && currentUserData) ? "flex" : "none";
+  document.getElementById("btnNotif").style.display = (currentUser && admin) ? "flex" : "none";
+  pintarBellDot();
+}
+
+function pintarBellDot(){
+  const dot = document.getElementById("bellDot");
+  if(!dot) return;
+  dot.style.display = notifNuevas ? "block" : "none";
+}
+
+document.getElementById("btnBack").addEventListener("click", ()=>{
+  history.length > 1 ? history.back() : navegar("#/");
+});
+document.getElementById("btnNotif").addEventListener("click", abrirNotificaciones);
+document.getElementById("btnPerfil").addEventListener("click", ()=>{
+  if(!currentUserData) return;
+  openModal(`
+    <h3>Tu cuenta</h3>
+    <p class="muted">${esc(currentUserData.email||"")}<br/>
+      <span class="badge-rol ${esAdmin() ? "admin" : "instalador"}" style="margin-top:6px;">${esAdmin() ? "🧑‍💼 Oficina / administrador" : "👷 Instalador"}</span>
+    </p>
+    <label class="field" style="margin-top:14px;"><span>Tu nombre</span><input type="text" id="inpPerfil" value="${esc(nombreUsuario())}" /></label>
+    <button class="btn btn-primary btn-block" id="btnGuardarPerfil">Guardar nombre</button>
+    <button class="btn btn-secondary btn-block" id="btnCerrarSesion" style="margin-top:10px;">Cerrar sesión</button>
+  `);
+  document.getElementById("btnGuardarPerfil").addEventListener("click", async ()=>{
+    const v = document.getElementById("inpPerfil").value.trim();
+    if(!v){ toast("Escribe un nombre"); return; }
+    try{
+      await db.collection("usuarios").doc(currentUser.uid).update({ nombre: v });
+      toast("Nombre actualizado");
+      closeModal();
+    }catch(err){ toast("Error: " + err.message); }
+  });
+  document.getElementById("btnCerrarSesion").addEventListener("click", ()=>{
+    closeModal();
+    auth.signOut();
+  });
+});
+
+/* ============================================================
+   PANTALLA: LOGIN
+   ============================================================ */
+function renderLogin(){
+  setTopbar(NOMBRE_APP, "", false);
+  $app().innerHTML = `
+    <div class="card login-card">
+      <div class="brand center">
+        <div class="brand-logo">🪟</div>
+        <h2>${esc(NOMBRE_APP)}</h2>
+        <p class="muted">Control de instalación en obra</p>
+      </div>
+      <label class="field"><span>Correo electrónico</span><input type="text" id="inpEmail" autocomplete="username" placeholder="tucorreo@empresa.es" /></label>
+      <label class="field"><span>Contraseña</span><input type="password" id="inpPass" autocomplete="current-password" placeholder="••••••••" /></label>
+      <button class="btn btn-primary btn-block" id="btnLogin">Entrar</button>
+      <button class="link-btn" id="btnOlvide" style="display:block;margin:10px auto 0;">¿Has olvidado tu contraseña?</button>
+      <hr class="sep" />
+      <button class="link-btn" id="btnPrimeraVez" style="display:block;margin:0 auto;">¿Primera vez? Crear cuenta de administrador</button>
+    </div>
+  `;
+  const intentar = async ()=>{
+    const email = document.getElementById("inpEmail").value.trim();
+    const pass = document.getElementById("inpPass").value;
+    if(!email || !pass){ toast("Escribe tu correo y contraseña"); return; }
+    const btn = document.getElementById("btnLogin");
+    btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Entrando…`;
+    try{
+      await auth.signInWithEmailAndPassword(email, pass);
+    }catch(err){
+      toast(traducirErrorAuth(err));
+      btn.disabled = false; btn.textContent = "Entrar";
+    }
+  };
+  document.getElementById("btnLogin").addEventListener("click", intentar);
+  document.getElementById("inpPass").addEventListener("keydown", (e)=>{ if(e.key==="Enter") intentar(); });
+  document.getElementById("btnOlvide").addEventListener("click", async ()=>{
+    const email = document.getElementById("inpEmail").value.trim();
+    if(!email){ toast("Escribe primero tu correo arriba"); return; }
+    try{
+      await auth.sendPasswordResetEmail(email);
+      toast("Te hemos enviado un correo para restablecer la contraseña");
+    }catch(err){ toast(traducirErrorAuth(err)); }
+  });
+  document.getElementById("btnPrimeraVez").addEventListener("click", pedirPinAdmin);
+}
+
+function pedirPinAdmin(){
+  openModal(`
+    <h3>Crear cuenta de administrador</h3>
+    <p class="muted" style="margin-bottom:14px;">Usa esto solo la primera vez, para crear la primera cuenta de tu empresa.
+    Las siguientes cuentas (instaladores u otros administradores) se crean después desde "Usuarios" dentro de la app.</p>
+    <label class="field"><span>Código de la empresa</span><input type="password" inputmode="numeric" id="inpPin" placeholder="••••" /></label>
+    <label class="field"><span>Tu nombre</span><input type="text" id="inpNombreNueva" /></label>
+    <label class="field"><span>Correo electrónico</span><input type="text" id="inpEmailNueva" /></label>
+    <label class="field"><span>Contraseña (mínimo 6 caracteres)</span><input type="password" id="inpPassNueva" /></label>
+    <button class="btn btn-primary btn-block" id="btnCrearAdmin">Crear cuenta</button>
+  `);
+  document.getElementById("btnCrearAdmin").addEventListener("click", async ()=>{
+    const pin = document.getElementById("inpPin").value.trim();
+    const nombre = document.getElementById("inpNombreNueva").value.trim();
+    const email = document.getElementById("inpEmailNueva").value.trim();
+    const pass = document.getElementById("inpPassNueva").value;
+    if(pin !== ADMIN_PIN){ toast("Código incorrecto"); return; }
+    if(!nombre || !email || !pass){ toast("Rellena todos los campos"); return; }
+    const btn = document.getElementById("btnCrearAdmin");
+    btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Creando…`;
+    try{
+      const cred = await auth.createUserWithEmailAndPassword(email, pass);
+      await db.collection("usuarios").doc(cred.user.uid).set({
+        nombre, email, rol: "admin", activo: true,
+        creadoEn: firebase.firestore.FieldValue.serverTimestamp(),
+        creadoPor: "Primera cuenta"
+      });
+      closeModal();
+      toast("Cuenta creada");
+    }catch(err){
+      toast(traducirErrorAuth(err));
+      btn.disabled = false; btn.textContent = "Crear cuenta";
+    }
+  });
+}
+
+/* ============================================================
+   PANTALLAS: CUENTA SIN CONFIGURAR / DESACTIVADA
+   ============================================================ */
+function renderCuentaNoConfigurada(){
+  setTopbar("Cuenta no configurada","",false);
+  $app().innerHTML = `
+    <div class="setup-banner">
+      <b>⚠️ Tu cuenta todavía no está configurada</b><br/><br/>
+      Has iniciado sesión correctamente, pero un administrador todavía no te ha dado de alta dentro de la app.
+      Pídele que te cree una cuenta desde "Usuarios".
+      <button class="btn btn-secondary btn-block" id="btnSalirNC" style="margin-top:14px;">Cerrar sesión</button>
+    </div>
+  `;
+  document.getElementById("btnSalirNC").addEventListener("click", ()=> auth.signOut());
+}
+
+function renderCuentaDesactivada(){
+  setTopbar("Cuenta desactivada","",false);
+  $app().innerHTML = `
+    <div class="setup-banner">
+      <b>⚠️ Tu cuenta ha sido desactivada</b><br/><br/>
+      Un administrador ha desactivado el acceso de tu cuenta. Contacta con la oficina si crees que es un error.
+      <button class="btn btn-secondary btn-block" id="btnSalirDA" style="margin-top:14px;">Cerrar sesión</button>
+    </div>
+  `;
+  document.getElementById("btnSalirDA").addEventListener("click", ()=> auth.signOut());
+}
+
+/* ============================================================
+   PANTALLA: CONFIGURACIÓN NECESARIA (falta Firebase)
+   ============================================================ */
+function renderSetupNecesario(){
+  setTopbar("Configuración necesaria","",false);
+  document.getElementById("btnPerfil").style.display = "none";
+  document.getElementById("btnNotif").style.display = "none";
+  $app().innerHTML = `
+    <div class="setup-banner">
+      <b>⚠️ Falta configurar Firebase</b><br/><br/>
+      Esta app necesita una base de datos gratuita (Firebase) para que todos los dispositivos
+      vean el mismo avance en tiempo real. Aún no se ha configurado.<br/><br/>
+      Abre el archivo <code>index.html</code>, busca <code>firebaseConfig</code> cerca del principio
+      del <code>&lt;script&gt;</code>, y sustituye los valores <code>TU_...</code> por los de tu
+      proyecto Firebase.<br/><br/>
+      Sigue la guía paso a paso del archivo <code>README.md</code> que acompaña a esta app
+      (tarda unos 10 minutos y es gratis, sin necesidad de tarjeta).<br/><br/>
+      Para las fotos y los planos hay un segundo paso opcional (Cloudinary, también gratis y sin tarjeta) —
+      sin él, la app funciona igual pero no se podrán subir hasta configurarlo.
+    </div>
+  `;
+}
+
+/* ============================================================
+   PANTALLA: LISTA DE OBRAS
+   ============================================================ */
+function renderListaObras(){
+  const admin = esAdmin();
+  $app().innerHTML = `
+    ${admin ? `
+      <button class="btn btn-primary btn-block" id="btnNuevaObra">➕ Nueva obra</button>
+      <div class="btn-row" style="margin-top:10px;">
+        <button class="btn btn-outline" id="btnUsuarios">👥 Usuarios</button>
+        <button class="btn btn-outline" id="btnEstadisticas">📊 Estadísticas</button>
+      </div>
+    ` : ""}
+    <button class="btn btn-outline btn-block" id="btnScanGlobal" style="margin-top:10px;">📷 Escanear QR de una ventana</button>
+    <div class="section-title" style="margin-top:22px;">${admin ? "Tus obras" : "Obras"}</div>
+    <div id="listaObras"><div class="empty">Cargando obras…</div></div>
+  `;
+  if(admin){
+    document.getElementById("btnNuevaObra").addEventListener("click", ()=> navegar("#/nueva"));
+    document.getElementById("btnUsuarios").addEventListener("click", ()=> navegar("#/usuarios"));
+    document.getElementById("btnEstadisticas").addEventListener("click", ()=> navegar("#/estadisticas"));
+  }
+  document.getElementById("btnScanGlobal").addEventListener("click", ()=> navegar("#/scan"));
+
+  const unsub = db.collection("obras").orderBy("creadoEn","desc").onSnapshot(async (snap)=>{
+    if(snap.empty){
+      document.getElementById("listaObras").innerHTML = admin
+        ? `<div class="empty">Aún no has creado ninguna obra.<br/>Pulsa "Nueva obra" para empezar.</div>`
+        : `<div class="empty">Todavía no hay obras creadas por la oficina.</div>`;
+      return;
+    }
+    const obras = snap.docs.map(d=>({id:d.id, ...d.data()}));
+
+    if(!admin){
+      // El instalador solo necesita ubicar la obra para llegar a sus ventanas, sin datos de gestión.
+      document.getElementById("listaObras").innerHTML = obras.map(obra=>`
+        <div class="obra-item" data-id="${obra.id}">
+          <div class="avatar">${esc((obra.nombre||"?").slice(0,2).toUpperCase())}</div>
+          <div class="info">
+            <h3>${esc(obra.nombre||"Sin nombre")}</h3>
+            <p>${esc(obra.direccion||"")}</p>
+          </div>
+        </div>
+      `).join("");
+      document.querySelectorAll(".obra-item").forEach(el=>{
+        el.addEventListener("click", ()=> navegar(`#/obra/${el.dataset.id}`));
+      });
+      return;
+    }
+
+    // Para cada obra calculamos el progreso a partir de sus ventanas (una lectura puntual, no listener, para no acumular listeners en la lista)
+    const filas = await Promise.all(obras.map(async (obra)=>{
+      const vSnap = await db.collection("obras").doc(obra.id).collection("ventanas").get();
+      const total = vSnap.size;
+      let checks = 0, terminadas = 0;
+      vSnap.forEach(vd=>{
+        const v = vd.data();
+        checks += pasosCompletados(v.estado);
+        if(v.estado && v.estado.terminada) terminadas++;
+      });
+      const pct = total ? Math.round((checks/(total*4))*100) : 0;
+      return {obra, total, terminadas, pct};
+    }));
+    document.getElementById("listaObras").innerHTML = filas.map(({obra,total,terminadas,pct})=>`
+      <div class="obra-item" data-id="${obra.id}">
+        <div class="avatar">${esc((obra.nombre||"?").slice(0,2).toUpperCase())}</div>
+        <div class="info">
+          <h3>${esc(obra.nombre||"Sin nombre")}</h3>
+          <p>${esc(obra.direccion||"")}${obra.direccion ? " · " : ""}${total} ventanas · ${terminadas} terminadas</p>
+        </div>
+        <div class="pct">${pct}%</div>
+      </div>
+    `).join("");
+    document.querySelectorAll(".obra-item").forEach(el=>{
+      el.addEventListener("click", ()=> navegar(`#/obra/${el.dataset.id}`));
+    });
+  }, (err)=>{ toast("Error cargando obras: " + err.message); });
+  unsubscribers.push(unsub);
+}
+
+/* ============================================================
+   PANTALLA: NUEVA OBRA
+   ============================================================ */
+function renderNuevaObra(){
+  $app().innerHTML = `
+    <div class="card">
+      <label class="field"><span>Nombre de la obra *</span><input type="text" id="inpNombre" placeholder="Ej: Edificio Marín, C/ Mayor 12" /></label>
+      <label class="field"><span>Dirección (opcional)</span><input type="text" id="inpDireccion" placeholder="Ej: C/ Mayor 12, Valencia" /></label>
+      <label class="field"><span>Cantidad de ventanas a instalar</span><input type="number" id="inpCantidad" min="0" max="2000" placeholder="Ej: 24" /></label>
+      <p class="muted" style="margin-top:-8px;margin-bottom:14px;">Si tienes muchas ventanas con casa, planta y referencia, déjalo en blanco: después de crear la obra podrás importarlas todas de golpe desde un Excel.</p>
+      <button class="btn btn-primary btn-block" id="btnCrear">Crear obra</button>
+    </div>
+  `;
+  document.getElementById("btnCrear").addEventListener("click", async ()=>{
+    const nombre = document.getElementById("inpNombre").value.trim();
+    const direccion = document.getElementById("inpDireccion").value.trim();
+    const cantidad = parseInt(document.getElementById("inpCantidad").value, 10) || 0;
+    if(!nombre){ toast("Escribe el nombre de la obra"); return; }
+    const btn = document.getElementById("btnCrear");
+    btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Creando…`;
+    try{
+      const obraRef = await db.collection("obras").add({
+        nombre, direccion,
+        numVentanas: cantidad,
+        creadoEn: firebase.firestore.FieldValue.serverTimestamp(),
+        creadoPor: nombreUsuario() || "Oficina"
+      });
+      if(cantidad > 0) await crearVentanas(obraRef.id, 1, cantidad);
+      toast("Obra creada");
+      navegar(`#/obra/${obraRef.id}`);
+    }catch(err){
+      toast("Error: " + err.message);
+      btn.disabled = false; btn.textContent = "Crear obra";
+    }
+  });
+}
+
+function etiquetaVentana(n){ return "V" + String(n).padStart(4,"0"); }
+
+async function crearVentanas(obraId, desde, hasta){
+  const obraRef = db.collection("obras").doc(obraId);
+  let batch = db.batch();
+  let count = 0;
+  for(let n = desde; n <= hasta; n++){
+    const ref = obraRef.collection("ventanas").doc(etiquetaVentana(n));
+    batch.set(ref, {
+      numero: n,
+      etiqueta: etiquetaVentana(n),
+      casa: "", planta: "", numeroPlano: "", referencia: "",
+      estado: estadoVacio(),
+      notas: [],
+      fotos: [],
+      actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    count++;
+    if(count % 400 === 0){ await batch.commit(); batch = db.batch(); }
+  }
+  await batch.commit();
+}
+
+// Crea ventanas a partir de filas ya normalizadas {casa, planta, numero, referencia}, importadas de un Excel/CSV.
+// numeroInicial es el "numero" interno (para ordenar) a partir del cual seguir contando en esta obra.
+async function crearVentanasDesdeFilas(obraId, filas, numeroInicial){
+  const obraRef = db.collection("obras").doc(obraId);
+  const idsUsados = new Set();
+  let batch = db.batch();
+  let count = 0;
+  let n = numeroInicial;
+  for(const fila of filas){
+    const base = slug([fila.casa, fila.planta, fila.numero].filter(Boolean).join("-")) || `ventana-${n}`;
+    let id = base, sufijo = 2;
+    while(idsUsados.has(id)){ id = `${base}-${sufijo}`; sufijo++; }
+    idsUsados.add(id);
+    const ref = obraRef.collection("ventanas").doc(id);
+    batch.set(ref, {
+      numero: n,
+      etiqueta: (fila.numero && String(fila.numero).trim()) || etiquetaVentana(n),
+      casa: fila.casa || "",
+      planta: fila.planta || "",
+      numeroPlano: fila.numero || "",
+      referencia: fila.referencia || "",
+      estado: estadoVacio(),
+      notas: [],
+      fotos: [],
+      actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    n++;
+    count++;
+    if(count % 400 === 0){ await batch.commit(); batch = db.batch(); }
+  }
+  await batch.commit();
+  return count;
+}
+
+// Lee un archivo .xlsx/.xls/.csv y devuelve filas normalizadas {casa, planta, numero, referencia}.
+// Reconoce las columnas por su nombre de cabecera sin importar mayúsculas/tildes/orden.
+async function leerFilasDesdeArchivo(file){
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type: "array" });
+  const hoja = wb.Sheets[wb.SheetNames[0]];
+  const filasCrudas = XLSX.utils.sheet_to_json(hoja, { defval: "" });
+  const MAPA_COLUMNAS = {
+    casa: ["casa", "vivienda", "numero de casa", "nº casa", "n casa", "portal"],
+    planta: ["planta", "piso"],
+    numero: ["numero", "nº", "n", "numero de ventana", "nº ventana", "ventana", "num", "codigo"],
+    referencia: ["referencia", "ref", "modelo", "tipo"]
+  };
+  function buscarValor(filaObj, claves){
+    for(const key of Object.keys(filaObj)){
+      const norm = normalizarCabecera(key);
+      if(claves.includes(norm)) return String(filaObj[key] ?? "").trim();
+    }
+    return "";
+  }
+  return filasCrudas
+    .map(f=>({
+      casa: buscarValor(f, MAPA_COLUMNAS.casa),
+      planta: buscarValor(f, MAPA_COLUMNAS.planta),
+      numero: buscarValor(f, MAPA_COLUMNAS.numero),
+      referencia: buscarValor(f, MAPA_COLUMNAS.referencia)
+    }))
+    .filter(f=> f.casa || f.planta || f.numero || f.referencia); // descarta filas totalmente vacías
+}
+
+function descargarPlantillaCsv(){
+  const filas = [
+    ["casa","planta","numero","referencia"],
+    ["1","Baja","V01","PVC-120x150"],
+    ["1","1","V02","PVC-90x120"],
+    ["2","Baja","V01","RPT-Corredera-2H"]
+  ];
+  const csv = filas.map(f=> f.map(c=> `"${String(c).replace(/"/g,'""')}"`).join(",")).join("\r\n");
+  const blob = new Blob(["﻿"+csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "plantilla_ventanas.csv";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=> URL.revokeObjectURL(url), 2000);
+}
+
+/* ============================================================
+   PANTALLA: DETALLE DE OBRA
+   ============================================================ */
+function renderObraDetalle(obraId, tabInicial){
+  const admin = esAdmin();
+  const TABS_ADMIN = ["ventanas","fotos","planos","stats"];
+  const TABS_INSTALADOR = ["ventanas","planos"];
+  const permitidas = admin ? TABS_ADMIN : TABS_INSTALADOR;
+  let tab = permitidas.includes(tabInicial) ? tabInicial : "ventanas";
+
+  setTopbar("Cargando…","",true);
+  $app().innerHTML = `<div class="empty">Cargando obra…</div>`;
+
+  const obraRef = db.collection("obras").doc(obraId);
+  let obraData = null;
+  let ventanas = [];
+  let planos = [];
+  let filtroReferencia = "";
+
+  function pintar(){
+    if(!obraData){ return; }
+    setTopbar(obraData.nombre || "Obra", obraData.direccion || "", true);
+
+    const total = ventanas.length;
+    const tabsHtml = `
+      <div class="tabs">
+        <button data-tab="ventanas" class="${tab==="ventanas"?"active":""}">Ventanas</button>
+        ${admin ? `<button data-tab="fotos" class="${tab==="fotos"?"active":""}">Fotos y notas</button>` : ""}
+        <button data-tab="planos" class="${tab==="planos"?"active":""}">Planos</button>
+        ${admin ? `<button data-tab="stats" class="${tab==="stats"?"active":""}">Estadísticas</button>` : ""}
+      </div>
+    `;
+
+    if(!admin){
+      // Vista reducida para el instalador: sus ventanas y los planos, sin cifras de gestión ni PDFs.
+      $app().innerHTML = `
+        <div class="card">
+          <h2 style="font-size:17px;">${esc(obraData.nombre||"Obra")}</h2>
+          ${obraData.direccion ? `<p class="muted">${esc(obraData.direccion)}</p>` : ""}
+          <button class="btn btn-primary btn-block" id="btnScan" style="margin-top:14px;">📷 Escanear QR</button>
+        </div>
+        ${tabsHtml}
+        <div id="tabContent"></div>
+      `;
+      document.getElementById("btnScan").addEventListener("click", ()=> navegar(`#/scan`));
+      document.querySelectorAll(".tabs button").forEach(b=>{
+        b.addEventListener("click", ()=> navegar(`#/obra/${obraId}/${b.dataset.tab}`));
+      });
+      if(tab === "planos") pintarPlanos();
+      else pintarVentanasGrid(obraId, ventanas);
+      return;
+    }
+
+    const checks = ventanas.reduce((n,v)=> n + pasosCompletados(v.estado), 0);
+    const pct = total ? Math.round((checks/(total*4))*100) : 0;
+    const cuentas = {instalada:0,sellada:0,acristalada:0,terminada:0};
+    ventanas.forEach(v=>{ ETAPAS.forEach(e=>{ if(v.estado && v.estado[e]) cuentas[e]++; }); });
+    const maxNumero = ventanas.reduce((m,v)=> Math.max(m, v.numero||0), 0);
+
+    $app().innerHTML = `
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+          <div>
+            <div class="pctbig">${pct}%</div>
+            <div class="muted">completado · ${total} ventanas</div>
+          </div>
+          <button class="btn btn-secondary btn-sm" id="btnEliminarObra">🗑️ Eliminar obra</button>
+        </div>
+        <div class="progress-wrap"><div class="progress-bar" style="width:${pct}%;"></div></div>
+        <div class="stat-grid">
+          ${ETAPAS.map(e=>`
+            <div class="stat ${e}">
+              <div class="n">${cuentas[e]}</div>
+              <div class="l">${ETAPA_LABEL[e]}</div>
+            </div>
+          `).join("")}
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="btnScan">📷 Escanear QR</button>
+          <button class="btn btn-outline" id="btnAddVentanas">➕ Añadir ventanas</button>
+          <button class="btn btn-outline" id="btnImportarExcel">📥 Importar Excel/CSV</button>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-secondary" id="btnPdfQr">🧾 PDF de etiquetas QR</button>
+          <button class="btn btn-secondary" id="btnExportExcel">📊 Exportar Excel completo</button>
+          <button class="btn btn-secondary" id="btnExportPendientes">📋 Exportar pendientes</button>
+        </div>
+      </div>
+
+      ${tabsHtml}
+
+      <div id="tabContent"></div>
+    `;
+
+    document.getElementById("btnScan").addEventListener("click", ()=> navegar(`#/scan`));
+    document.getElementById("btnAddVentanas").addEventListener("click", ()=> abrirAddVentanas(obraId, total));
+    document.getElementById("btnImportarExcel").addEventListener("click", ()=> abrirImportarExcel(obraId, maxNumero+1));
+    document.getElementById("btnPdfQr").addEventListener("click", ()=> generarPdfQr(obraId, obraData, ventanas));
+    document.getElementById("btnExportExcel").addEventListener("click", ()=> generarExcelCompleto(obraData, ventanas));
+    document.getElementById("btnExportPendientes").addEventListener("click", ()=> abrirExportarPendientes(obraId, obraData, ventanas));
+    document.getElementById("btnEliminarObra").addEventListener("click", ()=> eliminarObra(obraId, obraData));
+    document.querySelectorAll(".tabs button").forEach(b=>{
+      b.addEventListener("click", ()=> navegar(`#/obra/${obraId}/${b.dataset.tab}`));
+    });
+
+    if(tab === "fotos") pintarFotosNotas(ventanas);
+    else if(tab === "planos") pintarPlanos();
+    else if(tab === "stats") pintarEstadisticasObra();
+    else pintarVentanasGrid(obraId, ventanas);
+  }
+
+  function pintarVentanasGrid(obraId, ventanas){
+    const cont = document.getElementById("tabContent");
+    if(!ventanas.length){ cont.innerHTML = `<div class="empty">No hay ventanas todavía.</div>`; return; }
+
+    const referencias = [...new Set(ventanas.map(v=>v.referencia).filter(Boolean))].sort(compararNatural);
+    const filtradas = filtroReferencia ? ventanas.filter(v=>v.referencia===filtroReferencia) : ventanas;
+    const agrupado = ventanas.some(v=>v.casa);
+
+    const selectorHtml = referencias.length ? `
+      <div class="card" style="padding:12px 14px;margin-bottom:14px;">
+        <label class="field" style="margin-bottom:0;">
+          <span>Filtrar por referencia/modelo</span>
+          <select id="selFiltroRef">
+            <option value="">Todas las referencias (${ventanas.length})</option>
+            ${referencias.map(r=>`<option value="${esc(r)}" ${r===filtroReferencia?"selected":""}>${esc(r)} (${ventanas.filter(v=>v.referencia===r).length})</option>`).join("")}
+          </select>
+        </label>
+      </div>
+    ` : "";
+
+    function chipHtml(v){
+      const et = ultimaEtapa(v.estado);
+      const nNotas = (v.notas||[]).length, nFotos = (v.fotos||[]).length;
+      return `
+        <div class="vchip ${et?("st-"+et):""}" data-id="${v.id}">
+          ${(nNotas||nFotos) ? `<div class="badges">${nNotas?`<span>📝</span>`:""}${nFotos?`<span>📷</span>`:""}</div>` : ""}
+          <div class="num">${esc(etiquetaCorta(v))}</div>
+          <div class="et">${et ? ETAPA_LABEL[et] : "Pendiente"}</div>
+        </div>`;
+    }
+
+    let cuerpoHtml;
+    if(!filtradas.length){
+      cuerpoHtml = `<div class="empty">Ninguna ventana con esa referencia.</div>`;
+    } else if(!agrupado){
+      cuerpoHtml = `<div class="vgrid">${filtradas.map(chipHtml).join("")}</div>`;
+    } else {
+      const porCasa = new Map();
+      ordenarVentanas(filtradas).forEach(v=>{
+        const casaKey = v.casa || "__sin_casa__";
+        if(!porCasa.has(casaKey)) porCasa.set(casaKey, []);
+        porCasa.get(casaKey).push(v);
+      });
+      cuerpoHtml = [...porCasa.entries()].map(([casaKey, lista])=>{
+        const checks = lista.reduce((n,v)=> n + pasosCompletados(v.estado), 0);
+        const pctCasa = Math.round((checks/(lista.length*4))*100);
+        const porPlanta = new Map();
+        lista.forEach(v=>{
+          const plantaKey = v.planta || "__sin_planta__";
+          if(!porPlanta.has(plantaKey)) porPlanta.set(plantaKey, []);
+          porPlanta.get(plantaKey).push(v);
+        });
+        const plantasHtml = [...porPlanta.entries()].map(([plantaKey, vs])=>`
+          <div class="section-title" style="margin-top:14px;">${plantaKey === "__sin_planta__" ? "Sin planta asignada" : "Planta " + esc(plantaKey)}</div>
+          <div class="vgrid">${vs.map(chipHtml).join("")}</div>
+        `).join("");
+        return `
+          <details class="card" style="padding:0;overflow:hidden;">
+            <summary style="padding:14px 16px;cursor:pointer;font-weight:700;display:flex;justify-content:space-between;align-items:center;">
+              <span>${casaKey === "__sin_casa__" ? "Sin casa asignada" : "Casa " + esc(casaKey)} <span class="muted" style="font-weight:500;">· ${lista.length} ventanas</span></span>
+              <span style="color:var(--primario);">${pctCasa}%</span>
+            </summary>
+            <div style="padding:0 16px 16px 16px;">${plantasHtml}</div>
+          </details>
+        `;
+      }).join("");
+    }
+
+    cont.innerHTML = selectorHtml + cuerpoHtml;
+
+    const sel = document.getElementById("selFiltroRef");
+    if(sel) sel.addEventListener("change", ()=>{ filtroReferencia = sel.value; pintarVentanasGrid(obraId, ventanas); });
+
+    cont.querySelectorAll(".vchip").forEach(el=>{
+      el.addEventListener("click", ()=> navegar(`#/ventana/${obraId}/${el.dataset.id}`));
+    });
+  }
+
+  function pintarFotosNotas(ventanas){
+    const cont = document.getElementById("tabContent");
+    const items = [];
+    ventanas.forEach(v=>{
+      const etiquetaFeed = etiquetaCorta(v) + (descripcionVentana(v) ? ` (${descripcionVentana(v)})` : "");
+      (v.notas||[]).forEach(n=> items.push({tipo:"nota", ventana:etiquetaFeed, ventanaId:v.id, ...n}));
+      (v.fotos||[]).forEach(f=> items.push({tipo:"foto", ventana:etiquetaFeed, ventanaId:v.id, ...f}));
+    });
+    items.sort((a,b)=> new Date(b.fecha||0) - new Date(a.fecha||0));
+    if(!items.length){ cont.innerHTML = `<div class="card"><div class="empty">Todavía no hay fotos ni anotaciones.</div></div>`; return; }
+    cont.innerHTML = `<div class="card">${items.map(it=>`
+      <div class="feed-item">
+        <div class="meta">
+          <span><span class="who">${esc(it.autor||"—")}</span> · ${esc(it.ventana)}</span>
+          <span>${fechaCorta(it.fecha)}</span>
+        </div>
+        ${it.tipo==="nota" ? `<div class="txt">${esc(it.texto)}</div>` : `<img src="${esc(it.url)}" style="max-width:180px;border-radius:10px;margin-top:4px;" loading="lazy" />`}
+      </div>
+    `).join("")}</div>`;
+  }
+
+  function pintarPlanos(){
+    const cont = document.getElementById("tabContent");
+    const subirHtml = admin ? `
+      <div class="card">
+        <input type="file" id="inpPlano" accept="image/*,.pdf" style="display:none;" />
+        <button class="btn btn-primary btn-block" id="btnSubirPlano">📐 Subir plano</button>
+        ${!CLOUDINARY_OK ? `<p class="muted" style="margin-top:8px;">Falta configurar Cloudinary para poder subir planos (ver README.md).</p>` : ""}
+      </div>` : "";
+    if(!planos.length){
+      cont.innerHTML = subirHtml + `<div class="empty">${admin ? "Todavía no has subido ningún plano." : "La oficina todavía no ha subido planos de esta obra."}</div>`;
+    } else {
+      cont.innerHTML = subirHtml + `<div class="card">${planos.map(p=>`
+        <div class="feed-item">
+          <div class="meta"><span><span class="who">${esc(p.nombre||"Plano")}</span></span><span>${fechaCorta(p.fecha)}</span></div>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+            ${p.tipo==="image"
+              ? `<a href="${esc(p.url)}" target="_blank" rel="noopener"><img src="${esc(p.url)}" style="width:70px;height:70px;object-fit:cover;border-radius:8px;" loading="lazy" /></a>`
+              : `<a href="${esc(p.url)}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm">📄 Ver / descargar</a>`}
+            <span class="muted" style="flex:1;">Subido por ${esc(p.subidoPor||"—")}</span>
+            ${admin ? `<button class="btn btn-danger btn-sm" data-del="${p.id}">Eliminar</button>` : ""}
+          </div>
+        </div>
+      `).join("")}</div>`;
+    }
+    if(admin){
+      document.getElementById("btnSubirPlano").addEventListener("click", ()=> document.getElementById("inpPlano").click());
+      document.getElementById("inpPlano").addEventListener("change", (e)=> subirPlano(obraId, e.target.files));
+      cont.querySelectorAll("[data-del]").forEach(b=> b.addEventListener("click", ()=> borrarPlano(obraId, b.dataset.del)));
+    }
+  }
+
+  function pintarEstadisticasObra(){
+    const cont = document.getElementById("tabContent");
+    cont.innerHTML = `<div class="empty">Cargando estadísticas…</div>`;
+    db.collection("eventos").where("obraId","==",obraId).get().then(snap=>{
+      const eventos = snap.docs.map(d=>d.data());
+      const filas = agregarPorInstalador(eventos);
+      if(!filas.length){ cont.innerHTML = `<div class="card"><div class="empty">Todavía no hay actividad registrada en esta obra.</div></div>`; return; }
+      cont.innerHTML = `<div class="card">${filas.map(f=>`
+        <div class="userrow">
+          <div class="info"><h3>${esc(f.nombre)}</h3><p class="muted">Última actividad: ${fechaCorta(f.ultima)}</p></div>
+          <div class="stat-mini">
+            <span>🪟 ${f.instalada}</span><span>🧴 ${f.sellada}</span><span>🔷 ${f.acristalada}</span><span>✅ ${f.terminada}</span>
+          </div>
+        </div>
+      `).join("")}</div>`;
+    }).catch(err=> cont.innerHTML = `<div class="empty">Error cargando estadísticas: ${esc(err.message)}</div>`);
+  }
+
+  const unsub = obraRef.onSnapshot(doc=>{
+    if(!doc.exists){ toast("Esta obra ya no existe"); navegar("#/"); return; }
+    obraData = doc.data();
+    pintar();
+  }, err=> toast("Error: " + err.message));
+  unsubscribers.push(unsub);
+
+  const unsub2 = obraRef.collection("ventanas").orderBy("numero").onSnapshot(snap=>{
+    ventanas = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    pintar();
+  }, err=> toast("Error: " + err.message));
+  unsubscribers.push(unsub2);
+
+  const unsub3 = obraRef.collection("planos").orderBy("fecha","desc").onSnapshot(snap=>{
+    planos = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    pintar();
+  }, err=> toast("Error cargando planos: " + err.message));
+  unsubscribers.push(unsub3);
+}
+
+function abrirAddVentanas(obraId, totalActual){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  openModal(`
+    <h3>Añadir más ventanas</h3>
+    <p class="muted" style="margin-bottom:14px;">Ya hay ${totalActual}. Indica cuántas quieres añadir más.</p>
+    <label class="field"><span>Ventanas a añadir</span><input type="number" id="inpMas" min="1" max="1000" /></label>
+    <button class="btn btn-primary btn-block" id="btnConfirmarMas">Añadir</button>
+  `);
+  document.getElementById("btnConfirmarMas").addEventListener("click", async ()=>{
+    const n = parseInt(document.getElementById("inpMas").value,10);
+    if(!n || n<1){ toast("Cantidad no válida"); return; }
+    closeModal();
+    try{
+      await crearVentanas(obraId, totalActual+1, totalActual+n);
+      await db.collection("obras").doc(obraId).update({ numVentanas: totalActual+n });
+      toast(`${n} ventanas añadidas`);
+    }catch(err){ toast("Error: " + err.message); }
+  });
+}
+
+function abrirImportarExcel(obraId, numeroInicial){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  openModal(`
+    <h3>Importar ventanas desde Excel/CSV</h3>
+    <p class="muted" style="margin-bottom:10px;">
+      El archivo debe tener una fila por ventana con columnas para <b>casa</b>, <b>planta</b>,
+      <b>número</b> (el que usáis en el plano) y <b>referencia</b> (modelo). No hace falta que se
+      llamen exactamente así ni que vayan en ese orden — la app las reconoce solas.
+    </p>
+    <button class="link-btn" id="btnPlantilla" style="margin-bottom:14px;">⬇️ Descargar plantilla de ejemplo</button>
+    <label class="field"><span>Archivo (.xlsx, .xls o .csv)</span><input type="file" id="inpArchivo" accept=".xlsx,.xls,.csv" /></label>
+    <p class="muted" id="importEstado" style="margin-bottom:14px;"></p>
+    <button class="btn btn-primary btn-block" id="btnImportar" disabled>Importar</button>
+  `);
+  document.getElementById("btnPlantilla").addEventListener("click", descargarPlantillaCsv);
+
+  let filasListas = null;
+
+  document.getElementById("inpArchivo").addEventListener("change", async (e)=>{
+    const file = e.target.files[0];
+    const estado = document.getElementById("importEstado");
+    const btn = document.getElementById("btnImportar");
+    filasListas = null;
+    btn.disabled = true;
+    if(!file) return;
+    estado.textContent = "Leyendo archivo…";
+    try{
+      filasListas = await leerFilasDesdeArchivo(file);
+      if(!filasListas.length){
+        estado.textContent = "No se ha reconocido ninguna fila válida en ese archivo. Revisa que tenga cabeceras (casa, planta, numero, referencia) y al menos una fila de datos.";
+        return;
+      }
+      estado.textContent = `Se han encontrado ${filasListas.length} ventanas. Pulsa Importar para añadirlas a esta obra.`;
+      btn.disabled = false;
+    }catch(err){
+      estado.textContent = "No se ha podido leer el archivo: " + err.message;
+    }
+  });
+
+  document.getElementById("btnImportar").addEventListener("click", async ()=>{
+    if(!filasListas || !filasListas.length) return;
+    const btn = document.getElementById("btnImportar");
+    btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Importando…`;
+    try{
+      const n = await crearVentanasDesdeFilas(obraId, filasListas, numeroInicial);
+      await db.collection("obras").doc(obraId).update({ numVentanas: firebase.firestore.FieldValue.increment(n) });
+      toast(`${n} ventanas importadas`);
+      closeModal();
+    }catch(err){
+      toast("Error importando: " + err.message);
+      btn.disabled = false; btn.textContent = "Importar";
+    }
+  });
+}
+
+async function eliminarObra(obraId, obraData){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  if(!confirmar(`¿Eliminar la obra "${obraData.nombre}"? Se borrarán todas sus ventanas, fotos, notas y planos. Esta acción no se puede deshacer.`)) return;
+  toast("Eliminando obra…");
+  try{
+    const obraRef = db.collection("obras").doc(obraId);
+    const vSnap = await obraRef.collection("ventanas").get();
+    let batch = db.batch(); let c=0;
+    for(const doc of vSnap.docs){
+      batch.delete(doc.ref); c++;
+      if(c % 400 === 0){ await batch.commit(); batch = db.batch(); }
+    }
+    const pSnap = await obraRef.collection("planos").get();
+    for(const doc of pSnap.docs){
+      batch.delete(doc.ref); c++;
+      if(c % 400 === 0){ await batch.commit(); batch = db.batch(); }
+    }
+    await batch.commit();
+    // Limpia también el historial de eventos asociado a esta obra (mejor esfuerzo, no bloquea el borrado si falla)
+    try{
+      const eSnap = await db.collection("eventos").where("obraId","==",obraId).get();
+      let batch2 = db.batch(); let c2=0;
+      for(const doc of eSnap.docs){
+        batch2.delete(doc.ref); c2++;
+        if(c2 % 400 === 0){ await batch2.commit(); batch2 = db.batch(); }
+      }
+      await batch2.commit();
+    }catch(e){ /* no crítico */ }
+    await obraRef.delete();
+    toast("Obra eliminada");
+    navegar("#/");
+  }catch(err){ toast("Error eliminando: " + err.message); }
+}
+
+/* ============================================================
+   PANTALLA: DETALLE DE VENTANA
+   ============================================================ */
+function renderVentana(obraId, ventanaId){
+  setTopbar("Cargando…","",true);
+  $app().innerHTML = `<div class="empty">Cargando ventana…</div>`;
+
+  const obraRef = db.collection("obras").doc(obraId);
+  const vRef = obraRef.collection("ventanas").doc(ventanaId);
+  let obraNombre = "";
+  let ultimoV = null;
+
+  function pintar(v){
+    ultimoV = v;
+    setTopbar(`${obraNombre} · ${etiquetaCorta(v)}`, descripcionVentana(v), true);
+    const estado = v.estado || estadoVacio();
+    $app().innerHTML = `
+      <div class="card">
+        <h2 style="font-size:19px;">Ventana ${esc(etiquetaCorta(v))}</h2>
+        ${descripcionVentana(v) ? `<p class="muted" style="margin-top:2px;">${esc(descripcionVentana(v))}</p>` : ""}
+        <p class="muted" style="margin-top:6px;">Marca cada etapa según avance la instalación</p>
+        <div style="margin-top:14px;">
+          ${ETAPAS.map(e=>`
+            <div class="etapa-row ${estado[e]?"checked":""}" data-e="${e}">
+              <div class="chk">${estado[e]?"✓":ETAPA_ICONO[e]}</div>
+              <div class="txt"><b>${ETAPA_LABEL[e]}</b></div>
+            </div>
+          `).join("")}
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="section-title">Anotaciones</div>
+        <textarea id="inpNota" placeholder="Escribe una anotación sobre esta ventana…"></textarea>
+        <button class="btn btn-primary" id="btnAddNota" style="margin-top:10px;">Añadir anotación</button>
+        <div style="margin-top:14px;">
+          ${(v.notas||[]).slice().reverse().map((n,i)=>`
+            <div class="nota-item">
+              <button class="del" data-idx="${(v.notas.length-1-i)}">✕</button>
+              <div class="meta" style="font-size:12px;color:var(--gris-600);margin-bottom:4px;">
+                <b style="color:var(--gris-800);">${esc(n.autor||"—")}</b> · ${fechaCorta(n.fecha)}
+              </div>
+              <div>${esc(n.texto)}</div>
+            </div>
+          `).join("") || `<p class="muted">Sin anotaciones todavía.</p>`}
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="section-title">Fotos</div>
+        <input type="file" id="inpFoto" accept="image/*" capture="environment" multiple style="display:none;" />
+        <button class="btn btn-secondary btn-block" id="btnFoto">📷 Añadir foto(s)</button>
+        <div class="foto-grid" id="fotoGrid">
+          ${(v.fotos||[]).map((f,i)=>`
+            <div class="foto-item">
+              <a href="${esc(f.url)}" target="_blank" rel="noopener"><img src="${esc(f.url)}" loading="lazy" /></a>
+              <button class="del" data-idx="${i}">✕</button>
+            </div>
+          `).join("")}
+        </div>
+        ${!(v.fotos||[]).length ? `<p class="muted" style="margin-top:8px;">Sin fotos todavía.</p>` : ""}
+      </div>
+    `;
+
+    document.querySelectorAll(".etapa-row").forEach(row=>{
+      row.addEventListener("click", ()=> toggleEtapa(obraId, obraNombre, vRef, ventanaId, etiquetaCorta(v), estado, row.dataset.e));
+    });
+    document.getElementById("btnAddNota").addEventListener("click", ()=> addNota(vRef));
+    document.getElementById("btnFoto").addEventListener("click", ()=> document.getElementById("inpFoto").click());
+    document.getElementById("inpFoto").addEventListener("change", (e)=> subirFotos(obraId, ventanaId, vRef, e.target.files));
+    document.querySelectorAll("#fotoGrid .del").forEach(b=>{
+      b.addEventListener("click", ()=> borrarFoto(vRef, v.fotos[parseInt(b.dataset.idx,10)]));
+    });
+    document.querySelectorAll(".nota-item .del").forEach(b=>{
+      b.addEventListener("click", ()=> borrarNota(vRef, v.notas[parseInt(b.dataset.idx,10)]));
+    });
+  }
+
+  obraRef.get().then(d=>{
+    obraNombre = d.exists ? (d.data().nombre||"Obra") : "Obra";
+    if(ultimoV) pintar(ultimoV);
+  });
+
+  const unsub = vRef.onSnapshot(doc=>{
+    if(!doc.exists){ toast("Esta ventana ya no existe"); navegar(`#/obra/${obraId}`); return; }
+    pintar(doc.data());
+  }, err=> toast("Error: " + err.message));
+  unsubscribers.push(unsub);
+}
+
+async function toggleEtapa(obraId, obraNombre, vRef, ventanaId, ventanaEtiqueta, estadoActual, etapa){
+  const idx = ETAPAS.indexOf(etapa);
+  const activar = !estadoActual[etapa];
+  const nuevo = { ...estadoActual };
+  if(activar){
+    // marcar esta y todas las anteriores
+    for(let i=0;i<=idx;i++) nuevo[ETAPAS[i]] = true;
+  } else {
+    // desmarcar esta y todas las posteriores
+    for(let i=idx;i<ETAPAS.length;i++) nuevo[ETAPAS[i]] = false;
+  }
+  // Un solo clic (p.ej. "Terminada") puede marcar en cascada varias etapas a la vez: registramos
+  // un evento por cada etapa que realmente cambia, para que las estadísticas por instalador cuenten bien.
+  const cambiadas = ETAPAS.filter(e => nuevo[e] !== estadoActual[e]);
+  try{
+    await vRef.update({ estado: nuevo, actualizadoEn: firebase.firestore.FieldValue.serverTimestamp() });
+    cambiadas.forEach(e => registrarEvento(obraId, obraNombre, ventanaId, ventanaEtiqueta, e, nuevo[e]));
+  }catch(err){ toast("Error guardando: " + err.message); }
+}
+
+// Registra en el histórico "eventos" quién hizo qué y cuándo (para notificaciones y estadísticas).
+// Es un registro auxiliar: si falla, no interrumpe el trabajo del instalador.
+function registrarEvento(obraId, obraNombre, ventanaId, ventanaEtiqueta, etapa, activar){
+  db.collection("eventos").add({
+    obraId, obraNombre: obraNombre || "",
+    ventanaId, ventanaEtiqueta: ventanaEtiqueta || "",
+    tipo: "etapa", etapa, activar,
+    uid: currentUser ? currentUser.uid : null,
+    nombre: nombreUsuario() || "—",
+    fecha: new Date().toISOString()
+  }).catch(()=>{});
+}
+
+async function addNota(vRef){
+  const txt = document.getElementById("inpNota").value.trim();
+  if(!txt){ toast("Escribe algo primero"); return; }
+  const autor = nombreUsuario() || "—";
+  const btn = document.getElementById("btnAddNota");
+  btn.disabled = true;
+  try{
+    await vRef.update({
+      notas: firebase.firestore.FieldValue.arrayUnion({ texto: txt, autor, fecha: new Date().toISOString() }),
+      actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    document.getElementById("inpNota").value = "";
+  }catch(err){ toast("Error: " + err.message); }
+  btn.disabled = false;
+}
+
+async function borrarNota(vRef, nota){
+  if(!confirmar("¿Eliminar esta anotación?")) return;
+  try{ await vRef.update({ notas: firebase.firestore.FieldValue.arrayRemove(nota) }); }
+  catch(err){ toast("Error: " + err.message); }
+}
+
+// Sube un archivo a Cloudinary (imagen o PDF) usando el preset sin firmar. Sirve tanto para fotos como para planos.
+async function subirArchivoCloudinary(file){
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("upload_preset", CLOUDINARY_CONFIG.uploadPreset);
+  const resp = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CONFIG.cloudName}/auto/upload`, {
+    method: "POST", body: fd
+  });
+  const data = await resp.json();
+  if(!resp.ok || !data.secure_url){
+    throw new Error(data?.error?.message || "Fallo al subir el archivo");
+  }
+  return { url: data.secure_url, publicId: data.public_id, resourceType: data.resource_type };
+}
+
+async function subirFotos(obraId, ventanaId, vRef, files){
+  if(!files || !files.length) return;
+  if(!CLOUDINARY_OK){
+    toast("Falta configurar Cloudinary para poder subir fotos (ver README.md)");
+    document.getElementById("inpFoto").value = "";
+    return;
+  }
+  const autor = nombreUsuario() || "—";
+  toast(`Subiendo ${files.length} foto(s)…`);
+  for(const file of files){
+    try{
+      const { url, publicId } = await subirArchivoCloudinary(file);
+      await vRef.update({
+        fotos: firebase.firestore.FieldValue.arrayUnion({
+          url, publicId, autor, fecha: new Date().toISOString()
+        }),
+        actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
+      });
+    }catch(err){ toast("Error subiendo foto: " + err.message); }
+  }
+  toast("Fotos subidas");
+  document.getElementById("inpFoto").value = "";
+}
+
+async function borrarFoto(vRef, foto){
+  if(!confirmar("¿Quitar esta foto de la ventana? Dejará de verse en la app.")) return;
+  try{
+    await vRef.update({ fotos: firebase.firestore.FieldValue.arrayRemove(foto) });
+  }catch(err){ toast("Error: " + err.message); }
+}
+
+async function subirPlano(obraId, files){
+  if(!files || !files.length) return;
+  if(!CLOUDINARY_OK){
+    toast("Falta configurar Cloudinary para poder subir planos (ver README.md)");
+    document.getElementById("inpPlano").value = "";
+    return;
+  }
+  const subidoPor = nombreUsuario() || "—";
+  toast(`Subiendo ${files.length} plano(s)…`);
+  const obraRef = db.collection("obras").doc(obraId);
+  for(const file of files){
+    try{
+      const { url, publicId, resourceType } = await subirArchivoCloudinary(file);
+      await obraRef.collection("planos").add({
+        nombre: file.name || "Plano",
+        url, publicId,
+        tipo: resourceType === "image" ? "image" : "pdf",
+        subidoPor,
+        fecha: new Date().toISOString()
+      });
+    }catch(err){ toast("Error subiendo plano: " + err.message); }
+  }
+  toast("Planos subidos");
+  document.getElementById("inpPlano").value = "";
+}
+
+async function borrarPlano(obraId, planoId){
+  if(!confirmar("¿Eliminar este plano?")) return;
+  try{
+    await db.collection("obras").doc(obraId).collection("planos").doc(planoId).delete();
+  }catch(err){ toast("Error: " + err.message); }
+}
+
+/* ============================================================
+   PANTALLA: USUARIOS (admin)
+   ============================================================ */
+function renderUsuarios(){
+  $app().innerHTML = `
+    <button class="btn btn-primary btn-block" id="btnCrearUsuario">➕ Crear usuario</button>
+    <p class="muted" style="margin-top:10px;">Las cuentas dan acceso con correo y contraseña propios. Los instaladores solo pueden marcar avances, notas y fotos; la oficina ve y gestiona todo.</p>
+    <div class="section-title" style="margin-top:20px;">Cuentas</div>
+    <div id="listaUsuarios"><div class="empty">Cargando…</div></div>
+  `;
+  document.getElementById("btnCrearUsuario").addEventListener("click", abrirCrearUsuario);
+  const unsub = db.collection("usuarios").onSnapshot(snap=>{
+    const usuarios = snap.docs.map(d=>({id:d.id, ...d.data()})).sort((a,b)=> (a.nombre||"").localeCompare(b.nombre||"","es"));
+    const cont = document.getElementById("listaUsuarios");
+    if(!usuarios.length){ cont.innerHTML = `<div class="empty">No hay usuarios todavía.</div>`; return; }
+    const adminsActivos = usuarios.filter(u=>u.rol==="admin" && u.activo!==false).length;
+    cont.innerHTML = `<div class="card">${usuarios.map(u=>`
+      <div class="userrow">
+        <div class="info">
+          <h3>${esc(u.nombre||"Sin nombre")}${u.activo===false?'<span class="badge-rol inactivo">Desactivada</span>':""}</h3>
+          <p class="muted">${esc(u.email||"")}</p>
+        </div>
+        <span class="badge-rol ${u.rol==='admin'?'admin':'instalador'}">${u.rol==='admin'?'Oficina':'Instalador'}</span>
+        <button class="btn btn-secondary btn-sm" data-editar="${u.id}">Editar</button>
+      </div>
+    `).join("")}</div>`;
+    cont.querySelectorAll("[data-editar]").forEach(b=>{
+      b.addEventListener("click", ()=> abrirEditarUsuario(usuarios.find(u=>u.id===b.dataset.editar), adminsActivos));
+    });
+  }, err=> toast("Error: " + err.message));
+  unsubscribers.push(unsub);
+}
+
+function abrirCrearUsuario(){
+  openModal(`
+    <h3>Crear usuario</h3>
+    <label class="field"><span>Nombre</span><input type="text" id="inpNombreU" /></label>
+    <label class="field"><span>Correo electrónico</span><input type="text" id="inpEmailU" /></label>
+    <label class="field"><span>Contraseña (mínimo 6 caracteres)</span><input type="password" id="inpPassU" /></label>
+    <label class="field"><span>Rol</span>
+      <select id="selRolU">
+        <option value="instalador">Instalador</option>
+        <option value="admin">Oficina / administrador</option>
+      </select>
+    </label>
+    <button class="btn btn-primary btn-block" id="btnCrearU">Crear usuario</button>
+  `);
+  document.getElementById("btnCrearU").addEventListener("click", async ()=>{
+    const nombre = document.getElementById("inpNombreU").value.trim();
+    const email = document.getElementById("inpEmailU").value.trim();
+    const pass = document.getElementById("inpPassU").value;
+    const rol = document.getElementById("selRolU").value;
+    if(!nombre || !email || !pass){ toast("Rellena todos los campos"); return; }
+    const btn = document.getElementById("btnCrearU");
+    btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Creando…`;
+    try{
+      await crearUsuario(nombre, email, pass, rol);
+      toast("Usuario creado");
+      closeModal();
+    }catch(err){
+      toast(traducirErrorAuth(err));
+      btn.disabled = false; btn.textContent = "Crear usuario";
+    }
+  });
+}
+
+// Crea la cuenta en una instancia SECUNDARIA de Firebase Auth, para no cerrar la sesión
+// del administrador que la está creando (truco habitual sin backend propio).
+async function crearUsuario(nombre, email, password, rol){
+  let secApp;
+  try{ secApp = firebase.app("secundaria"); }
+  catch(e){ secApp = firebase.initializeApp(firebaseConfig, "secundaria"); }
+  const sAuth = secApp.auth();
+  const cred = await sAuth.createUserWithEmailAndPassword(email, password);
+  await db.collection("usuarios").doc(cred.user.uid).set({
+    nombre, email, rol, activo: true,
+    creadoEn: firebase.firestore.FieldValue.serverTimestamp(),
+    creadoPor: nombreUsuario() || "Oficina"
+  });
+  await sAuth.signOut();
+}
+
+function abrirEditarUsuario(u, adminsActivos){
+  if(!u) return;
+  const activoActual = u.activo !== false;
+  const esUnicoAdminActivo = u.rol === "admin" && activoActual && adminsActivos <= 1;
+  openModal(`
+    <h3>Editar usuario</h3>
+    <p class="muted">${esc(u.email||"")}</p>
+    <label class="field"><span>Nombre</span><input type="text" id="inpNombreEd" value="${esc(u.nombre||"")}" /></label>
+    <label class="field"><span>Rol</span>
+      <select id="selRolEd" ${esUnicoAdminActivo?"disabled":""}>
+        <option value="instalador" ${u.rol!=='admin'?'selected':''}>Instalador</option>
+        <option value="admin" ${u.rol==='admin'?'selected':''}>Oficina / administrador</option>
+      </select>
+    </label>
+    ${esUnicoAdminActivo ? `<p class="muted">Es el único administrador activo: no se puede cambiar de rol ni desactivar.</p>` : ""}
+    <button class="btn btn-primary btn-block" id="btnGuardarEd">Guardar cambios</button>
+    <button class="btn btn-secondary btn-block" id="btnToggleActivo" style="margin-top:10px;" ${esUnicoAdminActivo?"disabled":""}>${!activoActual ? "Reactivar cuenta" : "Desactivar cuenta"}</button>
+  `);
+  document.getElementById("btnGuardarEd").addEventListener("click", async ()=>{
+    const nombre = document.getElementById("inpNombreEd").value.trim();
+    const rol = document.getElementById("selRolEd").value;
+    if(!nombre){ toast("Escribe un nombre"); return; }
+    try{
+      await db.collection("usuarios").doc(u.id).update({ nombre, rol });
+      toast("Cambios guardados"); closeModal();
+    }catch(err){ toast("Error: " + err.message); }
+  });
+  document.getElementById("btnToggleActivo").addEventListener("click", async ()=>{
+    try{
+      await db.collection("usuarios").doc(u.id).update({ activo: !activoActual });
+      toast(activoActual ? "Cuenta desactivada" : "Cuenta reactivada"); closeModal();
+    }catch(err){ toast("Error: " + err.message); }
+  });
+}
+
+/* ============================================================
+   ESTADÍSTICAS POR INSTALADOR
+   ============================================================ */
+// Agrupa una lista de eventos de etapa por instalador. Solo cuenta las veces que se MARCA
+// una etapa (activar=true); desmarcar no resta, para no confundir el recuento de trabajo hecho.
+function agregarPorInstalador(eventos){
+  const map = new Map();
+  eventos.forEach(ev=>{
+    if(ev.tipo !== "etapa" || !ev.activar) return;
+    const key = ev.nombre || "—";
+    if(!map.has(key)) map.set(key, {instalada:0,sellada:0,acristalada:0,terminada:0,total:0,ultima:null});
+    const r = map.get(key);
+    if(ETAPAS.includes(ev.etapa)) r[ev.etapa] = (r[ev.etapa]||0) + 1;
+    r.total++;
+    if(!r.ultima || (ev.fecha && ev.fecha > r.ultima)) r.ultima = ev.fecha;
+  });
+  return [...map.entries()].map(([nombre,r])=>({nombre,...r})).sort((a,b)=> b.total - a.total);
+}
+
+function renderEstadisticas(){
+  $app().innerHTML = `<div class="empty">Cargando estadísticas…</div>`;
+  db.collection("eventos").orderBy("fecha","desc").limit(3000).get().then(snap=>{
+    const eventos = snap.docs.map(d=>d.data());
+    const filas = agregarPorInstalador(eventos);
+    $app().innerHTML = `
+      <div class="card">
+        <div class="section-title">Resumen por instalador</div>
+        <p class="muted" style="margin-bottom:10px;">🪟 Instalada · 🧴 Sellada · 🔷 Acristalada · ✅ Terminada</p>
+        ${!filas.length ? `<div class="empty">Todavía no hay actividad registrada.</div>` : filas.map(f=>`
+          <div class="userrow">
+            <div class="info"><h3>${esc(f.nombre)}</h3><p class="muted">Última actividad: ${fechaCorta(f.ultima)}</p></div>
+            <div class="stat-mini">
+              <span>🪟 ${f.instalada}</span><span>🧴 ${f.sellada}</span><span>🔷 ${f.acristalada}</span><span>✅ ${f.terminada}</span>
+            </div>
+          </div>
+        `).join("")}
+      </div>
+    `;
+  }).catch(err=> $app().innerHTML = `<div class="empty">Error cargando estadísticas: ${esc(err.message)}</div>`);
+}
+
+/* ============================================================
+   NOTIFICACIONES (ventanas terminadas)
+   No hay backend de verdad, así que esto es un aviso "mientras la app
+   está abierta" (en la propia app y, si el navegador lo permite, como
+   notificación del sistema) — no es un push real que llegue con la
+   app cerrada. Ver README.md.
+   ============================================================ */
+function iniciarListenerNotificaciones(){
+  if(notifUnsub){ notifUnsub(); notifUnsub = null; }
+  if(!esAdmin()) return;
+  notifBaseline = new Date().toISOString();
+  notifVistos = new Set();
+  notifUnsub = db.collection("eventos").orderBy("fecha","desc").limit(20).onSnapshot(snap=>{
+    snap.docChanges().forEach(ch=>{
+      if(ch.type !== "added") return;
+      const id = ch.doc.id;
+      if(notifVistos.has(id)) return;
+      notifVistos.add(id);
+      const e = ch.doc.data();
+      if(!e.fecha || e.fecha <= notifBaseline) return; // ignora lo que ya existía antes de abrir la app
+      if(e.tipo === "etapa" && e.activar && e.etapa === "terminada"){
+        toast(`✅ ${e.nombre||"Alguien"} terminó ${e.ventanaEtiqueta||""}${e.obraNombre?` (${e.obraNombre})`:""}`);
+        if("Notification" in window && Notification.permission === "granted"){
+          try{ new Notification("Ventana terminada", { body: `${e.ventanaEtiqueta||""} — ${e.obraNombre||""}` }); }catch(err){}
+        }
+        notifNuevas = true;
+        pintarBellDot();
+      }
+    });
+  }, ()=>{ /* fallo silencioso: no bloquear la app por esto */ });
+}
+
+async function abrirNotificaciones(){
+  if(!esAdmin()) return;
+  openModal(`
+    <h3>Actividad reciente</h3>
+    <div id="notifLista" class="center muted" style="padding:20px 0;">Cargando…</div>
+    ${("Notification" in window && Notification.permission !== "granted") ? `<button class="link-btn" id="btnActivarAvisos" style="display:block;margin:10px auto 0;">🔔 Activar avisos del navegador</button>` : ""}
+  `);
+  const btnAvisos = document.getElementById("btnActivarAvisos");
+  if(btnAvisos){
+    btnAvisos.addEventListener("click", ()=>{
+      Notification.requestPermission().then(p=> toast(p==="granted" ? "Avisos activados" : "Avisos no activados"));
+    });
+  }
+  notifNuevas = false;
+  pintarBellDot();
+  try{
+    const snap = await db.collection("eventos").orderBy("fecha","desc").limit(50).get();
+    const eventos = snap.docs.map(d=>d.data()).filter(e=> e.tipo==="etapa" && e.activar && e.etapa==="terminada");
+    const cont = document.getElementById("notifLista");
+    if(!cont) return; // el usuario cerró el modal mientras cargaba
+    if(!eventos.length){ cont.innerHTML = `<div class="empty">Todavía no hay ventanas terminadas.</div>`; return; }
+    cont.className = "";
+    cont.innerHTML = eventos.map(e=>`
+      <div class="feed-item">
+        <div class="meta"><span><span class="who">${esc(e.nombre||"—")}</span> · ${esc(e.obraNombre||"")}</span><span>${fechaCorta(e.fecha)}</span></div>
+        <div class="txt">✅ Terminó la ventana ${esc(e.ventanaEtiqueta||"")}</div>
+      </div>
+    `).join("");
+  }catch(err){
+    const cont = document.getElementById("notifLista");
+    if(cont) cont.innerHTML = `<div class="empty">Error cargando: ${esc(err.message)}</div>`;
+  }
+}
+
+/* ============================================================
+   ESCÁNER DE QR
+   ============================================================ */
+let html5QrInstance = null;
+
+function renderScanner(){
+  $app().innerHTML = `
+    <div class="card">
+      <div id="reader"></div>
+      <p class="muted center" style="margin-top:12px;">Apunta la cámara al código QR pegado en la ventana.</p>
+      <button class="link-btn" id="btnManual" style="display:block;margin:8px auto 0;">¿No puedes escanear? Elige la obra manualmente</button>
+    </div>
+  `;
+  document.getElementById("btnManual").addEventListener("click", ()=> navegar("#/"));
+
+  html5QrInstance = new Html5Qrcode("reader");
+  const config = { fps: 10, qrbox: { width: 240, height: 240 } };
+
+  html5QrInstance.start(
+    { facingMode: "environment" },
+    config,
+    (decodedText)=>{
+      const ruta = extraerRutaVentana(decodedText);
+      if(!ruta){ toast("QR no reconocido"); return; }
+      pararScanner();
+      navegar(`#/ventana/${ruta.obraId}/${ruta.ventanaId}`);
+    },
+    ()=>{ /* fallo de lectura de frame individual: ignorar */ }
+  ).catch((err)=>{
+    document.getElementById("reader").innerHTML =
+      `<div class="empty" style="color:#fff;">No se pudo acceder a la cámara.<br/>Comprueba los permisos del navegador.<br/><small>${esc(String(err))}</small></div>`;
+  });
+}
+
+function pararScanner(){
+  if(html5QrInstance){
+    html5QrInstance.stop().catch(()=>{}).finally(()=>{
+      try{ html5QrInstance.clear(); }catch(e){}
+      html5QrInstance = null;
+    });
+  }
+}
+
+function extraerRutaVentana(texto){
+  // Acepta la URL completa generada por la app, o solo el fragmento #/ventana/OBRA/VENTANA
+  const m = String(texto).match(/#\/ventana\/([^\/\s]+)\/([^\/\s?#]+)/);
+  if(!m) return null;
+  return { obraId: m[1], ventanaId: m[2] };
+}
+
+// Detener la cámara al salir de la pantalla de escaneo o cambiar de ruta
+window.addEventListener("hashchange", ()=>{ pararScanner(); });
+
+/* ============================================================
+   GENERACIÓN DE QR (offscreen) Y PDFs
+   ============================================================ */
+function urlVentana(obraId, ventanaId){
+  return `${location.origin}${location.pathname}#/ventana/${obraId}/${ventanaId}`;
+}
+
+function generarQrDataUrl(texto, size){
+  qrHidden.innerHTML = "";
+  new QRCode(qrHidden, { text: texto, width: size, height: size, correctLevel: QRCode.CorrectLevel.M });
+  const canvas = qrHidden.querySelector("canvas");
+  return canvas ? canvas.toDataURL("image/png") : null;
+}
+
+async function generarPdfQr(obraId, obraData, ventanas){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  if(!ventanas.length){ toast("Esta obra no tiene ventanas"); return; }
+  toast("Generando PDF de etiquetas…");
+  const lista = ordenarVentanas(ventanas); // agrupa visualmente por casa/planta al imprimir
+  const avanzado = lista.some(tieneDatosAvanzados);
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const margen = 12, cols = 3, rows = avanzado ? 3 : 4, celda = avanzado ? 76 : 62, qrSize = 46;
+  const anchoUtil = 210 - margen*2;
+  const gapX = (anchoUtil - cols*qrSize) / (cols-1 || 1);
+  let col = 0, row = 0;
+
+  for(let i=0;i<lista.length;i++){
+    const v = lista[i];
+    if(row === rows){ doc.addPage(); row = 0; col = 0; }
+    const x = margen + col*(qrSize+gapX);
+    const y = margen + row*celda;
+    const dataUrl = generarQrDataUrl(urlVentana(obraId, v.id), 300);
+    if(dataUrl){ doc.addImage(dataUrl, "PNG", x, y, qrSize, qrSize); }
+    doc.setDrawColor(210); doc.rect(x-1, y-1, qrSize+2, qrSize+2);
+    doc.setFontSize(11); doc.setTextColor(20);
+    doc.text(String(etiquetaCorta(v)), x + qrSize/2, y + qrSize + 6, { align: "center" });
+    if(avanzado){
+      const linea2 = [v.casa && `Casa ${v.casa}`, v.planta && `Planta ${v.planta}`].filter(Boolean).join(" · ")
+        || String(obraData.nombre||"").slice(0,26);
+      doc.setFontSize(8); doc.setTextColor(90);
+      doc.text(linea2.slice(0,32), x + qrSize/2, y + qrSize + 10.5, { align: "center" });
+      if(v.referencia){
+        doc.setFontSize(7.5); doc.setTextColor(140);
+        doc.text(String(v.referencia).slice(0,34), x + qrSize/2, y + qrSize + 14.5, { align: "center" });
+      }
+    } else {
+      doc.setFontSize(8); doc.setTextColor(120);
+      doc.text(String(obraData.nombre||"").slice(0,26), x + qrSize/2, y + qrSize + 10.5, { align: "center" });
+    }
+
+    col++;
+    if(col === cols){ col = 0; row++; }
+    if(i % 15 === 0) await new Promise(r=> setTimeout(r, 0)); // ceder el hilo de UI
+  }
+  doc.save(`QR_${slug(obraData.nombre)}.pdf`);
+  toast("PDF de etiquetas generado");
+}
+
+function abrirExportarPendientes(obraId, obraData, ventanas){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  if(!ventanas.length){ toast("Esta obra no tiene ventanas"); return; }
+  const plantas = plantasDisponibles(ventanas);
+  openModal(`
+    <h3>Exportar pendientes</h3>
+    ${plantas.length ? `
+      <label class="field"><span>Ámbito</span>
+        <select id="selAmbitoExport">
+          <option value="">Toda la obra</option>
+          ${plantas.map(p=>`<option value="${esc(p)}">Solo planta ${esc(p)}</option>`).join("")}
+        </select>
+      </label>
+    ` : `<p class="muted" style="margin-bottom:14px;">Se exportará toda la obra.</p>`}
+    <div class="btn-row">
+      <button class="btn btn-secondary" id="btnExpPdf">🧾 Exportar PDF</button>
+      <button class="btn btn-secondary" id="btnExpXls">📊 Exportar Excel</button>
+    </div>
+  `);
+  const getAmbito = ()=>{ const sel = document.getElementById("selAmbitoExport"); return sel ? sel.value : ""; };
+  document.getElementById("btnExpPdf").addEventListener("click", ()=>{
+    const ambito = getAmbito();
+    closeModal();
+    generarPdfPendientes(obraId, obraData, filtrarPorPlanta(ventanas, ambito), ambito);
+  });
+  document.getElementById("btnExpXls").addEventListener("click", ()=>{
+    const ambito = getAmbito();
+    closeModal();
+    generarExcelPendientes(obraData, filtrarPorPlanta(ventanas, ambito), ambito);
+  });
+}
+
+async function generarPdfPendientes(obraId, obraData, ventanas, ambito){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  if(!ventanas.length){ toast("No hay ventanas en ese ámbito"); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const margen = 15;
+  let y = margen;
+
+  doc.setFontSize(16); doc.setTextColor(20);
+  doc.text(`Pendientes — ${obraData.nombre||""}${ambito ? " — Planta " + ambito : ""}`, margen, y); y += 6;
+  doc.setFontSize(10); doc.setTextColor(120);
+  doc.text(`${obraData.direccion||""}`, margen, y); y += 5;
+  doc.text(`Generado: ${new Date().toLocaleString("es-ES")}`, margen, y); y += 10;
+
+  const pendientes = ordenarVentanas(ventanas.filter(v => pasosCompletados(v.estado) < 4));
+  const total = ventanas.length, terminadas = total - pendientes.length;
+
+  doc.setFontSize(11); doc.setTextColor(20);
+  doc.text(`${terminadas} de ${total} ventanas terminadas · ${pendientes.length} pendientes`, margen, y);
+  y += 8;
+  doc.setDrawColor(200); doc.line(margen, y, 210-margen, y); y += 8;
+
+  if(!pendientes.length){
+    doc.setFontSize(12); doc.text("¡No quedan ventanas pendientes! 🎉", margen, y);
+  } else {
+    const agrupado = pendientes.some(v=>v.casa);
+    let casaActual = null;
+    for(const v of pendientes){
+      const casaKey = agrupado ? (v.casa || "Sin casa asignada") : null;
+      if(agrupado && casaKey !== casaActual){
+        if(y > 265){ doc.addPage(); y = margen; }
+        casaActual = casaKey;
+        if(y > margen) y += 3;
+        doc.setFontSize(12); doc.setTextColor(20);
+        doc.text(casaKey === "Sin casa asignada" ? casaKey : `Casa ${casaKey}`, margen, y);
+        y += 6;
+        doc.setDrawColor(225); doc.line(margen, y-3.5, 210-margen, y-3.5);
+      }
+      if(y > 280){ doc.addPage(); y = margen; casaActual = null; }
+      const faltan = ETAPAS.filter(e => !(v.estado && v.estado[e]));
+      const detalle = [v.planta && `Planta ${v.planta}`, v.referencia].filter(Boolean).join(" · ");
+      const linea = `${etiquetaCorta(v)}${detalle ? " ("+detalle+")" : ""}  —  Falta: ${faltan.map(e=>ETAPA_LABEL[e]).join(", ")}`;
+      doc.setFontSize(10.5); doc.setTextColor(20);
+      doc.text(linea, margen + (agrupado?4:0), y);
+      y += 6.5;
+    }
+  }
+  const sufijo = ambito ? `_Planta_${slug(ambito)}` : "";
+  doc.save(`Pendientes_${slug(obraData.nombre)}${sufijo}_${new Date().toISOString().slice(0,10)}.pdf`);
+  toast("PDF de pendientes generado");
+}
+
+function filaExcelVentana(v){
+  return {
+    Etiqueta: etiquetaCorta(v),
+    Casa: v.casa || "",
+    Planta: v.planta || "",
+    Referencia: v.referencia || "",
+    Instalada: v.estado && v.estado.instalada ? "Sí" : "No",
+    Sellada: v.estado && v.estado.sellada ? "Sí" : "No",
+    Acristalada: v.estado && v.estado.acristalada ? "Sí" : "No",
+    Terminada: v.estado && v.estado.terminada ? "Sí" : "No"
+  };
+}
+
+function generarExcelPendientes(obraData, ventanas, ambito){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  const pendientes = ordenarVentanas(ventanas.filter(v => pasosCompletados(v.estado) < 4));
+  if(!pendientes.length){ toast("No hay ventanas pendientes en ese ámbito"); return; }
+  const rows = pendientes.map(v=>({
+    ...filaExcelVentana(v),
+    Falta: ETAPAS.filter(e=>!(v.estado && v.estado[e])).map(e=>ETAPA_LABEL[e]).join(", ")
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Pendientes");
+  const sufijo = ambito ? `_Planta_${slug(ambito)}` : "";
+  XLSX.writeFile(wb, `Pendientes_${slug(obraData.nombre)}${sufijo}_${new Date().toISOString().slice(0,10)}.xlsx`);
+  toast("Excel de pendientes generado");
+}
+
+function generarExcelCompleto(obraData, ventanas){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  if(!ventanas.length){ toast("Esta obra no tiene ventanas"); return; }
+  const rows = ordenarVentanas(ventanas).map(v=>({
+    ...filaExcelVentana(v),
+    Notas: (v.notas||[]).map(n=>n.texto).join(" | "),
+    "Nº fotos": (v.fotos||[]).length
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Ventanas");
+  XLSX.writeFile(wb, `${slug(obraData.nombre)}_completo_${new Date().toISOString().slice(0,10)}.xlsx`);
+  toast("Excel generado");
+}
+
+/* ============================================================
+   INICIALIZACIÓN
+   ============================================================ */
+function init(){
+  qrHidden = document.createElement("div");
+  qrHidden.style.cssText = "position:fixed;left:-9999px;top:-9999px;visibility:hidden;";
+  document.body.appendChild(qrHidden);
+
+  if(!CONFIG_OK){
+    window.addEventListener("hashchange", route);
+    route();
+    return;
+  }
+
+  app = firebase.initializeApp(firebaseConfig);
+  db = firebase.firestore();
+  auth = firebase.auth();
+
+  window.addEventListener("hashchange", route);
+
+  auth.onAuthStateChanged((user)=>{
+    if(usuarioUnsub){ usuarioUnsub(); usuarioUnsub = null; }
+    if(notifUnsub){ notifUnsub(); notifUnsub = null; }
+    notifNuevas = false;
+
+    if(!user){
+      currentUser = null;
+      currentUserData = undefined;
+      route();
+      return;
+    }
+
+    currentUser = user;
+    currentUserData = undefined;
+    usuarioUnsub = db.collection("usuarios").doc(user.uid).onSnapshot((doc)=>{
+      currentUserData = doc.exists ? doc.data() : null;
+      iniciarListenerNotificaciones();
+      route();
+    }, (err)=>{
+      currentUserData = null;
+      toast("Error cargando tu cuenta: " + err.message);
+      route();
+    });
+  });
+}
+
+document.addEventListener("DOMContentLoaded", init);
+
+if("serviceWorker" in navigator){
+  window.addEventListener("load", ()=>{
+    navigator.serviceWorker.register("sw.js").catch(()=>{});
+  });
+}
+</script>
+</body>
+</html>
