@@ -841,16 +841,21 @@ async function crearVentanas(obraId, desde, hasta){
 
 // Crea QR "genéricos": sin casa/planta/número/referencia todavía. El instalador los asigna al escanear
 // por primera vez en obra, para poder repartir libremente qué ventana física va en cada hueco.
+// Crea N ventanas "placeholder" vacías, solo para poder generar un código QR físico por
+// adelantado. Al escanear cada una por primera vez, se asigna (o se vincula a una ya existente,
+// ver guardarAsignacion) — devuelve la lista de las creadas para poder imprimir sus QR al momento.
 async function crearVentanasGenericas(obraId, cantidad, numeroInicial){
   const obraRef = db.collection("obras").doc(obraId);
   let batch = db.batch();
   let count = 0;
+  const creadas = [];
   for(let i = 0; i < cantidad; i++){
     const n = numeroInicial + i;
-    const ref = obraRef.collection("ventanas").doc(etiquetaGenerica(n));
+    const etiqueta = etiquetaGenerica(n);
+    const ref = obraRef.collection("ventanas").doc(etiqueta);
     batch.set(ref, {
       numero: n,
-      etiqueta: etiquetaGenerica(n),
+      etiqueta: etiqueta,
       casa: "", planta: "", numeroPlano: "", referencia: "",
       asignada: false,
       estado: estadoVacio(),
@@ -858,11 +863,12 @@ async function crearVentanasGenericas(obraId, cantidad, numeroInicial){
       fotos: [],
       actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
     });
+    creadas.push({ id: etiqueta, etiqueta, numero: n, casa: "", planta: "", numeroPlano: "", referencia: "" });
     count++;
     if(count % 400 === 0){ await batch.commit(); batch = db.batch(); }
   }
   await batch.commit();
-  return count;
+  return creadas;
 }
 
 // Crea ventanas a partir de filas ya normalizadas {casa, planta, numero, referencia}, importadas de un Excel/CSV.
@@ -1007,7 +1013,7 @@ function renderObraDetalle(obraId, tabInicial){
 
     const checks = ventanas.reduce((n,v)=> n + pasosCompletados(v.estado), 0);
     const pct = total ? Math.round((checks/(total*ETAPAS.length))*100) : 0;
-    const cuentas = {instalada:0,sellada:0,acristalada:0,terminada:0};
+    const cuentas = {instalada:0,sellada:0,acristalada:0,composite:0,terminada:0};
     ventanas.forEach(v=>{ ETAPAS.forEach(e=>{ if(v.estado && v.estado[e]) cuentas[e]++; }); });
     const maxNumero = ventanas.reduce((m,v)=> Math.max(m, v.numero||0), 0);
 
@@ -1052,7 +1058,7 @@ function renderObraDetalle(obraId, tabInicial){
     document.getElementById("btnScan").addEventListener("click", ()=> navegar(`#/scan`));
     document.getElementById("btnAddVentanas").addEventListener("click", ()=> abrirAddVentanas(obraId, total));
     document.getElementById("btnImportarExcel").addEventListener("click", ()=> abrirImportarExcel(obraId, maxNumero+1));
-    document.getElementById("btnGenerarGenericas").addEventListener("click", ()=> abrirGenerarGenericas(obraId, maxNumero+1));
+    document.getElementById("btnGenerarGenericas").addEventListener("click", ()=> abrirGenerarGenericas(obraId, obraData, maxNumero+1));
     document.getElementById("btnPdfQr").addEventListener("click", ()=> generarPdfQr(obraId, obraData, ventanas));
     document.getElementById("btnExportExcel").addEventListener("click", ()=> generarExcelCompleto(obraData, ventanas));
     document.getElementById("btnExportPendientes").addEventListener("click", ()=> abrirExportarPendientes(obraId, obraData, ventanas));
@@ -1209,7 +1215,7 @@ function renderObraDetalle(obraId, tabInicial){
         <div class="userrow">
           <div class="info"><h3>${esc(f.nombre)}</h3><p class="muted">Última actividad: ${fechaCorta(f.ultima)}</p></div>
           <div class="stat-mini">
-            <span>🪟 ${f.instalada}</span><span>🧴 ${f.sellada}</span><span>🔷 ${f.acristalada}</span><span>✅ ${f.terminada}</span>
+            <span>🪟 ${f.instalada}</span><span>🧴 ${f.sellada}</span><span>🔷 ${f.acristalada}</span><span>🧱 ${f.composite}</span><span>✅ ${f.terminada}</span>
           </div>
         </div>
       `).join("")}</div>`;
@@ -1256,14 +1262,16 @@ function abrirAddVentanas(obraId, totalActual){
   });
 }
 
-function abrirGenerarGenericas(obraId, numeroInicial){
+function abrirGenerarGenericas(obraId, obraData, numeroInicial){
   if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
   openModal(`
     <h3>Generar QR genéricos</h3>
     <p class="muted" style="margin-bottom:14px;">
       Se crean etiquetas QR <b>sin casa ni planta asignada todavía</b> (se les pega la pegatina a las
-      ventanas físicas sin tener que decidir de antemano a qué hueco van). El instalador, al escanear
-      cada una por primera vez en obra, le asigna el número de plano y la casa que le corresponda.
+      ventanas físicas sin tener que decidir de antemano a qué hueco van). Al terminar se descarga
+      automáticamente el PDF con esos códigos para imprimir. El instalador, al escanear cada uno por
+      primera vez en obra, indica la casa/planta/número real — si esa ventana ya existe (por ejemplo
+      importada del Excel), el código se vincula a ella en vez de crear una ventana nueva duplicada.
     </p>
     <label class="field"><span>¿Cuántos códigos genéricos quieres generar?</span><input type="number" id="inpGenericas" min="1" max="2000" placeholder="Ej: 50" /></label>
     <button class="btn btn-primary btn-block" id="btnConfirmarGenericas">Generar</button>
@@ -1274,8 +1282,9 @@ function abrirGenerarGenericas(obraId, numeroInicial){
     closeModal();
     try{
       const creadas = await crearVentanasGenericas(obraId, n, numeroInicial);
-      await db.collection("obras").doc(obraId).update({ numVentanas: firebase.firestore.FieldValue.increment(creadas) });
-      toast(`${creadas} QR genéricos generados`);
+      await db.collection("obras").doc(obraId).update({ numVentanas: firebase.firestore.FieldValue.increment(creadas.length) });
+      toast(`${creadas.length} QR genéricos generados, preparando PDF…`);
+      await generarPdfQr(obraId, obraData, creadas);
     }catch(err){ toast("Error: " + err.message); }
   });
 }
@@ -1467,7 +1476,7 @@ function renderVentana(obraId, ventanaId){
         <button class="btn btn-primary btn-block" id="btnGuardarAsignacion" style="margin-top:14px;">Asignar y continuar</button>
       </div>
     `;
-    document.getElementById("btnGuardarAsignacion").addEventListener("click", ()=> guardarAsignacion(obraId, ventanaId, vRef));
+    document.getElementById("btnGuardarAsignacion").addEventListener("click", ()=> guardarAsignacion(obraId, ventanaId, vRef, true));
   }
 
   obraRef.get().then(d=>{
@@ -1477,7 +1486,11 @@ function renderVentana(obraId, ventanaId){
 
   const unsub = vRef.onSnapshot(doc=>{
     if(!doc.exists){ toast("Esta ventana ya no existe"); navegar(`#/obra/${obraId}`); return; }
-    pintar(doc.data());
+    const data = doc.data();
+    // Este código QR quedó vinculado a otra ventana ya existente (ver guardarAsignacion):
+    // redirige de forma transparente a los datos reales, sin duplicar nada.
+    if(data.aliasTo && data.aliasTo !== ventanaId){ navegar(`#/ventana/${obraId}/${data.aliasTo}`); return; }
+    pintar(data);
   }, err=> toast("Error: " + err.message));
   unsubscribers.push(unsub);
 }
@@ -1500,26 +1513,59 @@ function abrirEditarAsignacion(obraId, ventanaId, vRef, v){
     ${formularioAsignacionHtml(v)}
     <button class="btn btn-primary btn-block" id="btnGuardarAsignacion" style="margin-top:10px;">Guardar</button>
   `);
-  document.getElementById("btnGuardarAsignacion").addEventListener("click", ()=> guardarAsignacion(obraId, ventanaId, vRef));
+  document.getElementById("btnGuardarAsignacion").addEventListener("click", ()=> guardarAsignacion(obraId, ventanaId, vRef, false));
 }
 
-async function guardarAsignacion(obraId, ventanaId, vRef){
+// permitirVincular: true solo en la primera asignación de un QR genérico (pintarAsignacion). Si en ese
+// caso los datos coinciden con una ventana que ya existe (normalmente importada del Excel), este código
+// QR se vincula a ella (aliasTo) en vez de crear una ventana nueva duplicada. Al editar una ventana ya
+// asignada (abrirEditarAsignacion) no se vincula: solo se avisa de la coincidencia, por si es un error.
+async function guardarAsignacion(obraId, ventanaId, vRef, permitirVincular){
   const casa = document.getElementById("inpAsigCasa").value.trim();
   const planta = document.getElementById("inpAsigPlanta").value.trim();
   const numeroPlano = document.getElementById("inpAsigNumero").value.trim();
   const referencia = document.getElementById("inpAsigReferencia").value.trim();
   if(!casa && !numeroPlano){ toast("Indica al menos la casa o el número de plano"); return; }
 
+  const btn = document.getElementById("btnGuardarAsignacion");
+
+  let existente = null;
   if(casa && numeroPlano){
     try{
       const dupSnap = await db.collection("obras").doc(obraId).collection("ventanas")
         .where("casa","==",casa).where("planta","==",planta).where("numeroPlano","==",numeroPlano).get();
-      const otra = dupSnap.docs.find(d=> d.id !== ventanaId);
-      if(otra && !confirmar(`Ya hay otra ventana marcada como Casa ${casa}${planta?", Planta "+planta:""}, Nº ${numeroPlano}. ¿Asignar igualmente?`)) return;
-    }catch(e){ /* si falla la comprobación de duplicados, seguimos igualmente: no es crítico */ }
+      existente = dupSnap.docs.find(d=> d.id !== ventanaId && !d.data().aliasTo) || null;
+    }catch(e){ /* si falla la comprobación, seguimos igualmente: no es crítico */ }
   }
 
-  const btn = document.getElementById("btnGuardarAsignacion");
+  if(existente && permitirVincular){
+    const vincular = confirmar(
+      `Ya existe la ventana Casa ${casa}${planta?", Planta "+planta:""}, Nº ${numeroPlano} (probablemente importada del Excel).\n\n` +
+      `Aceptar = vincular este código QR a esa ventana ya existente (recomendado, evita duplicados).\n` +
+      `Cancelar = crear esta como una ventana nueva independiente.`
+    );
+    if(vincular){
+      if(btn){ btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Guardando…`; }
+      try{
+        await vRef.update({
+          aliasTo: existente.id,
+          asignada: true,
+          actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        toast("Código QR vinculado a la ventana existente");
+        closeModal();
+        navegar(`#/ventana/${obraId}/${existente.id}`);
+      }catch(err){
+        toast("Error: " + err.message);
+        if(btn){ btn.disabled = false; btn.textContent = "Guardar"; }
+      }
+      return;
+    }
+    // si cancela, sigue abajo y se guarda como ventana nueva independiente
+  } else if(existente && !permitirVincular){
+    if(!confirmar(`Ya hay otra ventana marcada como Casa ${casa}${planta?", Planta "+planta:""}, Nº ${numeroPlano}. ¿Guardar igualmente?`)) return;
+  }
+
   if(btn){ btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Guardando…`; }
   try{
     await vRef.update({
@@ -1859,7 +1905,7 @@ function agregarPorInstalador(eventos){
   eventos.forEach(ev=>{
     if(ev.tipo !== "etapa" || !ev.activar) return;
     const key = ev.nombre || "—";
-    if(!map.has(key)) map.set(key, {instalada:0,sellada:0,acristalada:0,terminada:0,total:0,ultima:null});
+    if(!map.has(key)) map.set(key, {instalada:0,sellada:0,acristalada:0,composite:0,terminada:0,total:0,ultima:null});
     const r = map.get(key);
     if(ETAPAS.includes(ev.etapa)) r[ev.etapa] = (r[ev.etapa]||0) + 1;
     r.total++;
@@ -1876,12 +1922,12 @@ function renderEstadisticas(){
     $app().innerHTML = `
       <div class="card">
         <div class="section-title">Resumen por instalador</div>
-        <p class="muted" style="margin-bottom:10px;">🪟 Instalada · 🧴 Sellada · 🔷 Acristalada · ✅ Terminada</p>
+        <p class="muted" style="margin-bottom:10px;">🪟 Instalada · 🧴 Sellada · 🔷 Acristalada · 🧱 Composite · ✅ Terminada</p>
         ${!filas.length ? `<div class="empty">Todavía no hay actividad registrada.</div>` : filas.map(f=>`
           <div class="userrow">
             <div class="info"><h3>${esc(f.nombre)}</h3><p class="muted">Última actividad: ${fechaCorta(f.ultima)}</p></div>
             <div class="stat-mini">
-              <span>🪟 ${f.instalada}</span><span>🧴 ${f.sellada}</span><span>🔷 ${f.acristalada}</span><span>✅ ${f.terminada}</span>
+              <span>🪟 ${f.instalada}</span><span>🧴 ${f.sellada}</span><span>🔷 ${f.acristalada}</span><span>🧱 ${f.composite}</span><span>✅ ${f.terminada}</span>
             </div>
           </div>
         `).join("")}
