@@ -170,6 +170,10 @@
   }
   .nota-item{background:var(--gris-100);border-radius:10px;padding:10px 12px;margin-bottom:8px;position:relative;}
   .nota-item .del{position:absolute;top:8px;right:8px;background:none;border:none;color:var(--gris-400);font-size:12px;}
+  .nota-item.resuelta{opacity:.6;}
+  .nota-item.pendiente-incidencia{border-left:3px solid var(--naranja);}
+  .firma-pad-wrap{border:1.5px solid var(--gris-200);border-radius:10px;background:#fff;overflow:hidden;}
+  .firma-pad{width:100%;height:160px;display:block;cursor:crosshair;touch-action:none;}
   #reader{width:100%;border-radius:12px;overflow:hidden;background:#000;min-height:260px;}
   #toast{
     position:fixed;left:50%;bottom:24px;transform:translateX(-50%);
@@ -324,6 +328,9 @@ const ETAPA_LABEL = { instalada: "Instalada", sellada: "Sellada", acristalada: "
 const ETAPA_ICONO = { instalada: "🪟", sellada: "🧴", acristalada: "🔷", composite: "🧱", terminada: "✅" };
 
 function estadoVacio(){ return { instalada:false, sellada:false, acristalada:false, composite:false, terminada:false }; }
+
+// Objeto {etapa: 0} para inicializar/leer el resumen de progreso guardado en el propio doc de la obra.
+function progresoVacio(){ const p={}; ETAPAS.forEach(e=> p[e]=0); return p; }
 
 // Devuelve la etapa más avanzada alcanzada (para colorear), o null si ninguna
 function ultimaEtapa(estado){
@@ -708,6 +715,7 @@ function renderListaObras(){
         <button class="btn btn-outline" id="btnUsuarios">👥 Usuarios</button>
         <button class="btn btn-outline" id="btnEstadisticas">📊 Estadísticas</button>
       </div>
+      <button class="btn btn-outline btn-block" id="btnInformeGlobal" style="margin-top:10px;">📅 Informe de instalación</button>
     ` : ""}
     <button class="btn btn-outline btn-block" id="btnScanGlobal" style="margin-top:10px;">📷 Escanear QR de una ventana</button>
     <div class="section-title" style="margin-top:22px;">${admin ? "Tus obras" : "Obras"}</div>
@@ -717,6 +725,7 @@ function renderListaObras(){
     document.getElementById("btnNuevaObra").addEventListener("click", ()=> navegar("#/nueva"));
     document.getElementById("btnUsuarios").addEventListener("click", ()=> navegar("#/usuarios"));
     document.getElementById("btnEstadisticas").addEventListener("click", ()=> navegar("#/estadisticas"));
+    document.getElementById("btnInformeGlobal").addEventListener("click", ()=> abrirInformeInstalacion({ tipo: "global" }));
   }
   document.getElementById("btnScanGlobal").addEventListener("click", ()=> navegar("#/scan"));
 
@@ -746,20 +755,20 @@ function renderListaObras(){
       return;
     }
 
-    // Para cada obra calculamos el progreso a partir de sus ventanas (una lectura puntual, no listener, para no acumular listeners en la lista)
-    const filas = await Promise.all(obras.map(async (obra)=>{
-      const vSnap = await db.collection("obras").doc(obra.id).collection("ventanas").get();
-      let total = 0, checks = 0, terminadas = 0;
-      vSnap.forEach(vd=>{
-        const v = vd.data();
-        if(v.aliasTo) return; // código QR vinculado a otra ventana: no es una ventana física aparte
-        total++;
-        checks += pasosCompletados(v.estado);
-        if(v.estado && v.estado.terminada) terminadas++;
-      });
+    // El progreso de cada obra se lee directamente del resumen guardado en su propio documento
+    // (numVentanas/progreso) — NO se relee la subcolección de ventanas de cada obra. Esto es lo que
+    // antes disparaba miles de lecturas cada vez que se volvía a esta pantalla; ahora cuesta 1
+    // lectura por obra (la que ya hace falta para pintar la lista), sea cual sea su tamaño.
+    // Una obra creada antes de este resumen (progreso === undefined) se autocompleta sola en cuanto
+    // se entra en su detalle; hasta entonces aquí se ve con 0%, no hace falta releerla para saberlo.
+    const filas = obras.map(obra=>{
+      const total = obra.numVentanas || 0;
+      const progreso = obra.progreso || {};
+      const terminadas = progreso.terminada || 0;
+      const checks = ETAPAS.reduce((n,e)=> n + (progreso[e]||0), 0);
       const pct = total ? Math.round((checks/(total*ETAPAS.length))*100) : 0;
       return {obra, total, terminadas, pct};
-    }));
+    });
     document.getElementById("listaObras").innerHTML = filas.map(({obra,total,terminadas,pct})=>`
       <div class="obra-item" data-id="${obra.id}">
         <div class="avatar">${esc((obra.nombre||"?").slice(0,2).toUpperCase())}</div>
@@ -801,6 +810,10 @@ function renderNuevaObra(){
       const obraRef = await db.collection("obras").add({
         nombre, direccion,
         numVentanas: cantidad,
+        // Resumen de progreso guardado en la propia obra: se mantiene solo con pequeños incrementos
+        // cada vez que se marca una etapa, para no tener que releer todas las ventanas cada vez que
+        // se quiere ver el % completado (ver toggleEtapa y recalcularProgresoObra).
+        progreso: progresoVacio(),
         creadoEn: firebase.firestore.FieldValue.serverTimestamp(),
         creadoPor: nombreUsuario() || "Oficina"
       });
@@ -832,6 +845,8 @@ async function crearVentanas(obraId, desde, hasta){
       estado: estadoVacio(),
       notas: [],
       fotos: [],
+      incidencias: [],
+      entrega: null,
       actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
     });
     count++;
@@ -862,6 +877,8 @@ async function crearVentanasGenericas(obraId, cantidad, numeroInicial){
       estado: estadoVacio(),
       notas: [],
       fotos: [],
+      incidencias: [],
+      entrega: null,
       actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
     });
     creadas.push({ id: etiqueta, etiqueta, numero: n, casa: "", planta: "", numeroPlano: "", referencia: "" });
@@ -897,6 +914,8 @@ async function crearVentanasDesdeFilas(obraId, filas, numeroInicial){
       estado: estadoVacio(),
       notas: [],
       fotos: [],
+      incidencias: [],
+      entrega: null,
       actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
     });
     n++;
@@ -959,6 +978,19 @@ function descargarPlantillaCsv(){
   setTimeout(()=> URL.revokeObjectURL(url), 2000);
 }
 
+// Recalcula desde cero el resumen de progreso guardado en el doc de la obra (numVentanas y
+// progreso por etapa), a partir de la lista de ventanas ya cargada. Sirve tanto para "sanar" obras
+// antiguas que todavía no tienen ese resumen (se llama sola la primera vez que se abren) como para
+// un botón manual de "recalcular" si alguna vez las cifras se desajustan por cualquier motivo.
+async function recalcularProgresoObra(obraId, ventanas){
+  const visibles = ventanas.filter(v => !v.aliasTo);
+  const progreso = progresoVacio();
+  visibles.forEach(v=> ETAPAS.forEach(e=>{ if(v.estado && v.estado[e]) progreso[e]++; }));
+  try{
+    await db.collection("obras").doc(obraId).update({ numVentanas: visibles.length, progreso });
+  }catch(e){ /* no crítico: si falla, se sigue mostrando con las cifras que hubiera */ }
+}
+
 /* ============================================================
    PANTALLA: DETALLE DE OBRA
    ============================================================ */
@@ -968,6 +1000,7 @@ function renderObraDetalle(obraId, tabInicial){
   const TABS_INSTALADOR = ["ventanas","planos"];
   const permitidas = admin ? TABS_ADMIN : TABS_INSTALADOR;
   let tab = permitidas.includes(tabInicial) ? tabInicial : "ventanas";
+  let recalculando = false; // evita relanzar el auto-recálculo varias veces mientras llega la respuesta
 
   setTopbar("Cargando…","",true);
   $app().innerHTML = `<div class="empty">Cargando obra…</div>`;
@@ -977,6 +1010,7 @@ function renderObraDetalle(obraId, tabInicial){
   let ventanas = [];
   let planos = [];
   let filtroReferencia = "";
+  let filtroTexto = ""; // buscador de ventana por código/número o por casa
 
   function pintar(){
     if(!obraData){ return; }
@@ -991,7 +1025,7 @@ function renderObraDetalle(obraId, tabInicial){
       <div class="tabs">
         <button data-tab="ventanas" class="${tab==="ventanas"?"active":""}">Ventanas</button>
         ${admin ? `<button data-tab="fotos" class="${tab==="fotos"?"active":""}">Fotos y notas</button>` : ""}
-        <button data-tab="planos" class="${tab==="planos"?"active":""}">Planos</button>
+        <button data-tab="planos" class="${tab==="planos"?"active":""}">Documentos</button>
         ${admin ? `<button data-tab="stats" class="${tab==="stats"?"active":""}">Estadísticas</button>` : ""}
       </div>
     `;
@@ -1016,10 +1050,18 @@ function renderObraDetalle(obraId, tabInicial){
       return;
     }
 
-    const checks = ventanasVisibles.reduce((n,v)=> n + pasosCompletados(v.estado), 0);
-    const pct = total ? Math.round((checks/(total*ETAPAS.length))*100) : 0;
-    const cuentas = {instalada:0,sellada:0,acristalada:0,composite:0,terminada:0};
-    ventanasVisibles.forEach(v=>{ ETAPAS.forEach(e=>{ if(v.estado && v.estado[e]) cuentas[e]++; }); });
+    // El % y los contadores por etapa se sacan del resumen guardado en la propia obra
+    // (obraData.progreso / numVentanas), no releyendo las ventanas — así la cifra aparece al
+    // instante y no depende de tener que recorrer toda la lista cada vez. Si una obra todavía no
+    // tiene ese resumen (se está calculando solo, ver más abajo), se usa la cuenta local mientras tanto.
+    const totalResumen = obraData.progreso !== undefined ? (obraData.numVentanas || 0) : total;
+    const cuentas = obraData.progreso !== undefined ? obraData.progreso : (()=>{
+      const c = {instalada:0,sellada:0,acristalada:0,composite:0,terminada:0};
+      ventanasVisibles.forEach(v=> ETAPAS.forEach(e=>{ if(v.estado && v.estado[e]) c[e]++; }));
+      return c;
+    })();
+    const checks = ETAPAS.reduce((n,e)=> n + (cuentas[e]||0), 0);
+    const pct = totalResumen ? Math.round((checks/(totalResumen*ETAPAS.length))*100) : 0;
     // maxNumero usa TODAS las ventanas (incluidos los códigos QR ya vinculados a otra), para no
     // reutilizar nunca un número/etiqueta que ya existe en la base de datos y machacarlo sin querer.
     const maxNumero = ventanas.reduce((m,v)=> Math.max(m, v.numero||0), 0);
@@ -1029,9 +1071,12 @@ function renderObraDetalle(obraId, tabInicial){
         <div style="display:flex;justify-content:space-between;align-items:flex-start;">
           <div>
             <div class="pctbig">${pct}%</div>
-            <div class="muted">completado · ${total} ventanas</div>
+            <div class="muted">completado · ${totalResumen} ventanas</div>
           </div>
-          <button class="btn btn-secondary btn-sm" id="btnEliminarObra">🗑️ Eliminar obra</button>
+          <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;">
+            <button class="btn btn-secondary btn-sm" id="btnEliminarObra">🗑️ Eliminar obra</button>
+            <button class="link-btn" id="btnRecalcular" style="font-size:12px;white-space:nowrap;">🔄 Recalcular contadores</button>
+          </div>
         </div>
         <div class="progress-wrap"><div class="progress-bar" style="width:${pct}%;"></div></div>
         <div class="stat-grid">
@@ -1055,6 +1100,13 @@ function renderObraDetalle(obraId, tabInicial){
           <button class="btn btn-secondary" id="btnExportExcel">📊 Exportar Excel completo</button>
           <button class="btn btn-secondary" id="btnExportPendientes">📋 Exportar pendientes</button>
         </div>
+        <div class="btn-row">
+          <button class="btn btn-secondary" id="btnExportIncidencias">⚠️ Exportar incidencias</button>
+          <button class="btn btn-secondary" id="btnExportEntregadas">✅ Exportar entregadas</button>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-secondary" id="btnInformeObra">📅 Informe de instalación</button>
+        </div>
       </div>
 
       ${tabsHtml}
@@ -1069,7 +1121,15 @@ function renderObraDetalle(obraId, tabInicial){
     document.getElementById("btnPdfQr").addEventListener("click", ()=> generarPdfQr(obraId, obraData, ventanasVisibles));
     document.getElementById("btnExportExcel").addEventListener("click", ()=> generarExcelCompleto(obraData, ventanasVisibles));
     document.getElementById("btnExportPendientes").addEventListener("click", ()=> abrirExportarPendientes(obraId, obraData, ventanasVisibles));
+    document.getElementById("btnExportIncidencias").addEventListener("click", ()=> abrirExportarIncidencias(obraId, obraData, ventanasVisibles));
+    document.getElementById("btnExportEntregadas").addEventListener("click", ()=> abrirExportarEntregadas(obraId, obraData, ventanasVisibles));
+    document.getElementById("btnInformeObra").addEventListener("click", ()=> abrirInformeInstalacion({ tipo: "obra", obraId, obraNombre: obraData.nombre, ventanas: ventanasVisibles }));
     document.getElementById("btnEliminarObra").addEventListener("click", ()=> eliminarObra(obraId, obraData));
+    document.getElementById("btnRecalcular").addEventListener("click", async ()=>{
+      toast("Recalculando…");
+      await recalcularProgresoObra(obraId, ventanas);
+      toast("Contadores recalculados");
+    });
     document.querySelectorAll(".tabs button").forEach(b=>{
       b.addEventListener("click", ()=> navegar(`#/obra/${obraId}/${b.dataset.tab}`));
     });
@@ -1085,20 +1145,34 @@ function renderObraDetalle(obraId, tabInicial){
     if(!ventanas.length){ cont.innerHTML = `<div class="empty">No hay ventanas todavía.</div>`; return; }
 
     const referencias = [...new Set(ventanas.map(v=>v.referencia).filter(Boolean))].sort(compararNatural);
-    const filtradas = filtroReferencia ? ventanas.filter(v=>v.referencia===filtroReferencia) : ventanas;
+    const textoNorm = normalizarCabecera(filtroTexto);
+    const porReferencia = filtroReferencia ? ventanas.filter(v=>v.referencia===filtroReferencia) : ventanas;
+    // Busca por código/número de plano, casa o etiqueta interna (V0001/G0002) a la vez: cubre tanto
+    // "encontrar esta ventana en concreto" como "ver todas las de esta casa" con un único cuadro.
+    const filtradas = textoNorm ? porReferencia.filter(v=>
+      normalizarCabecera(v.numeroPlano).includes(textoNorm) ||
+      normalizarCabecera(v.casa).includes(textoNorm) ||
+      normalizarCabecera(v.etiqueta).includes(textoNorm)
+    ) : porReferencia;
     const agrupado = ventanas.some(v=>v.casa);
 
-    const selectorHtml = referencias.length ? `
+    const selectorHtml = `
       <div class="card" style="padding:12px 14px;margin-bottom:14px;">
-        <label class="field" style="margin-bottom:0;">
-          <span>Filtrar por referencia/modelo</span>
-          <select id="selFiltroRef">
-            <option value="">Todas las referencias (${ventanas.length})</option>
-            ${referencias.map(r=>`<option value="${esc(r)}" ${r===filtroReferencia?"selected":""}>${esc(r)} (${ventanas.filter(v=>v.referencia===r).length})</option>`).join("")}
-          </select>
+        <label class="field" style="margin-bottom:${referencias.length ? "10px" : "0"};">
+          <span>Buscar por código de ventana o por casa</span>
+          <input type="text" id="inpBuscarVentana" value="${esc(filtroTexto)}" placeholder="Ej: 1143 o A201" />
         </label>
+        ${referencias.length ? `
+          <label class="field" style="margin-bottom:0;">
+            <span>Filtrar por referencia/modelo</span>
+            <select id="selFiltroRef">
+              <option value="">Todas las referencias (${ventanas.length})</option>
+              ${referencias.map(r=>`<option value="${esc(r)}" ${r===filtroReferencia?"selected":""}>${esc(r)} (${ventanas.filter(v=>v.referencia===r).length})</option>`).join("")}
+            </select>
+          </label>
+        ` : ""}
       </div>
-    ` : "";
+    `;
 
     function chipHtml(v){
       const et = ultimaEtapa(v.estado);
@@ -1114,7 +1188,7 @@ function renderObraDetalle(obraId, tabInicial){
 
     let cuerpoHtml;
     if(!filtradas.length){
-      cuerpoHtml = `<div class="empty">Ninguna ventana con esa referencia.</div>`;
+      cuerpoHtml = `<div class="empty">${textoNorm ? "Ninguna ventana coincide con la búsqueda." : "Ninguna ventana con esa referencia."}</div>`;
     } else if(!agrupado){
       cuerpoHtml = `<div class="vgrid">${filtradas.map(chipHtml).join("")}</div>`;
     } else {
@@ -1138,7 +1212,7 @@ function renderObraDetalle(obraId, tabInicial){
           <div class="vgrid">${vs.map(chipHtml).join("")}</div>
         `).join("");
         return `
-          <details class="card" style="padding:0;overflow:hidden;">
+          <details class="card" style="padding:0;overflow:hidden;" ${textoNorm ? "open" : ""}>
             <summary style="padding:14px 16px;cursor:pointer;font-weight:700;display:flex;justify-content:space-between;align-items:center;">
               <span>${casaKey === "__sin_casa__" ? "Sin casa asignada" : "Casa " + esc(casaKey)} <span class="muted" style="font-weight:500;">· ${lista.length} ventanas</span></span>
               <span style="color:var(--primario);">${pctCasa}%</span>
@@ -1153,6 +1227,17 @@ function renderObraDetalle(obraId, tabInicial){
 
     const sel = document.getElementById("selFiltroRef");
     if(sel) sel.addEventListener("change", ()=>{ filtroReferencia = sel.value; pintarVentanasGrid(obraId, ventanas); });
+
+    const inpBuscar = document.getElementById("inpBuscarVentana");
+    if(inpBuscar){
+      inpBuscar.addEventListener("input", ()=>{
+        filtroTexto = inpBuscar.value;
+        pintarVentanasGrid(obraId, ventanas);
+        // Recolocamos el foco y el cursor al final tras redibujar, para poder seguir escribiendo sin cortes.
+        const inpNuevo = document.getElementById("inpBuscarVentana");
+        if(inpNuevo){ inpNuevo.focus(); const p = inpNuevo.value.length; inpNuevo.setSelectionRange(p,p); }
+      });
+    }
 
     cont.querySelectorAll(".vchip").forEach(el=>{
       el.addEventListener("click", ()=> navegar(`#/ventana/${obraId}/${el.dataset.id}`));
@@ -1184,16 +1269,29 @@ function renderObraDetalle(obraId, tabInicial){
     const cont = document.getElementById("tabContent");
     const subirHtml = admin ? `
       <div class="card">
+        <label class="field"><span>Tipo de documento</span>
+          <select id="selTipoDoc">
+            <option value="plano">📐 Plano</option>
+            <option value="fabricacion">📋 Parte de fabricación</option>
+          </select>
+        </label>
+        <label class="field" id="campoAmbitoDoc" style="display:none;">
+          <span>¿Qué casas o ventanas cubre? (opcional)</span>
+          <input type="text" id="inpAmbitoDoc" placeholder="Ej: Casas A1 a A10, o Pedido 45" />
+        </label>
         <input type="file" id="inpPlano" accept="image/*,.pdf" style="display:none;" />
-        <button class="btn btn-primary btn-block" id="btnSubirPlano">📐 Subir plano</button>
-        ${!CLOUDINARY_OK ? `<p class="muted" style="margin-top:8px;">Falta configurar Cloudinary para poder subir planos (ver README.md).</p>` : ""}
+        <button class="btn btn-primary btn-block" id="btnSubirPlano">📤 Subir documento</button>
+        ${!CLOUDINARY_OK ? `<p class="muted" style="margin-top:8px;">Falta configurar Cloudinary para poder subir documentos (ver README.md).</p>` : ""}
       </div>` : "";
-    if(!planos.length){
-      cont.innerHTML = subirHtml + `<div class="empty">${admin ? "Todavía no has subido ningún plano." : "La oficina todavía no ha subido planos de esta obra."}</div>`;
-    } else {
-      cont.innerHTML = subirHtml + `<div class="card">${planos.map(p=>`
+
+    // Bloque compartido para pintar tanto Planos como Parte de fabricación: mismo aspecto, misma
+    // forma de ver/descargar y (si es admin) de borrar, cada uno en su propia lista.
+    function bloqueDocumentos(lista, textoVacio){
+      if(!lista.length) return `<div class="empty">${textoVacio}</div>`;
+      return `<div class="card">${lista.map(p=>`
         <div class="feed-item">
-          <div class="meta"><span><span class="who">${esc(p.nombre||"Plano")}</span></span><span>${fechaCorta(p.fecha)}</span></div>
+          <div class="meta"><span><span class="who">${esc(p.nombre||"Documento")}</span></span><span>${fechaCorta(p.fecha)}</span></div>
+          ${p.ambito ? `<p class="muted" style="margin:2px 0 6px;">${esc(p.ambito)}</p>` : ""}
           <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
             ${p.tipo==="image"
               ? `<a href="${esc(p.url)}" target="_blank" rel="noopener"><img src="${esc(p.url)}" style="width:70px;height:70px;object-fit:cover;border-radius:8px;" loading="lazy" /></a>`
@@ -1204,9 +1302,32 @@ function renderObraDetalle(obraId, tabInicial){
         </div>
       `).join("")}</div>`;
     }
+
+    const planosSolo = planos.filter(p => (p.categoria||"plano") === "plano");
+    const fabricacionSolo = planos.filter(p => p.categoria === "fabricacion");
+
+    cont.innerHTML = subirHtml + `
+      <div class="section-title">📐 Planos</div>
+      ${bloqueDocumentos(planosSolo, admin ? "Todavía no has subido ningún plano." : "La oficina todavía no ha subido planos de esta obra.")}
+      <div class="section-title" style="margin-top:18px;">📋 Parte de fabricación</div>
+      <p class="muted" style="margin-top:-4px;margin-bottom:10px;">
+        Sube aquí el parte de fabricación (PDF) para tenerlo a mano — desde la ficha de cada ventana
+        hay un acceso directo a esta sección, ya que los códigos de ventana que usa la app son los
+        mismos que aparecen en el documento.
+      </p>
+      ${bloqueDocumentos(fabricacionSolo, admin ? "Todavía no has subido ningún parte de fabricación." : "La oficina todavía no ha subido el parte de fabricación de esta obra.")}
+    `;
+
     if(admin){
+      const selTipo = document.getElementById("selTipoDoc");
+      const campoAmbito = document.getElementById("campoAmbitoDoc");
+      selTipo.addEventListener("change", ()=>{ campoAmbito.style.display = selTipo.value === "fabricacion" ? "block" : "none"; });
       document.getElementById("btnSubirPlano").addEventListener("click", ()=> document.getElementById("inpPlano").click());
-      document.getElementById("inpPlano").addEventListener("change", (e)=> subirPlano(obraId, e.target.files));
+      document.getElementById("inpPlano").addEventListener("change", (e)=>{
+        const categoria = selTipo.value;
+        const ambito = (document.getElementById("inpAmbitoDoc").value || "").trim();
+        subirPlano(obraId, e.target.files, categoria, ambito);
+      });
       cont.querySelectorAll("[data-del]").forEach(b=> b.addEventListener("click", ()=> borrarPlano(obraId, b.dataset.del)));
     }
   }
@@ -1217,15 +1338,43 @@ function renderObraDetalle(obraId, tabInicial){
     db.collection("eventos").where("obraId","==",obraId).get().then(snap=>{
       const eventos = snap.docs.map(d=>d.data());
       const filas = agregarPorInstalador(eventos);
-      if(!filas.length){ cont.innerHTML = `<div class="card"><div class="empty">Todavía no hay actividad registrada en esta obra.</div></div>`; return; }
-      cont.innerHTML = `<div class="card">${filas.map(f=>`
-        <div class="userrow">
-          <div class="info"><h3>${esc(f.nombre)}</h3><p class="muted">Última actividad: ${fechaCorta(f.ultima)}</p></div>
-          <div class="stat-mini">
-            <span>🪟 ${f.instalada}</span><span>🧴 ${f.sellada}</span><span>🔷 ${f.acristalada}</span><span>🧱 ${f.composite}</span><span>✅ ${f.terminada}</span>
+      let filtro = "";
+
+      function pintarFilas(){
+        const norm = normalizarCabecera(filtro);
+        const visibles = norm ? filas.filter(f=> normalizarCabecera(f.nombre).includes(norm)) : filas;
+        if(!filas.length){ cont.innerHTML = `<div class="card"><div class="empty">Todavía no hay actividad registrada en esta obra.</div></div>`; return; }
+        cont.innerHTML = `
+          <div class="card">
+            <label class="field"><span>Buscar instalador</span><input type="text" id="inpBuscarInstObra" value="${esc(filtro)}" placeholder="Nombre del instalador…" /></label>
+            ${!visibles.length ? `<div class="empty">Ningún instalador coincide con la búsqueda.</div>` : visibles.map(f=>`
+              <div class="userrow">
+                <div class="info"><h3>${esc(f.nombre)}</h3><p class="muted">Última actividad: ${fechaCorta(f.ultima)}</p></div>
+                <div class="stat-mini">
+                  <span>🪟 ${f.instalada}</span><span>🧴 ${f.sellada}</span><span>🔷 ${f.acristalada}</span><span>🧱 ${f.composite}</span><span>✅ ${f.terminada}</span>
+                </div>
+              </div>
+            `).join("")}
+            <div class="btn-row" style="margin-top:14px;">
+              <button class="btn btn-secondary" id="btnExpEstObraPdf">🧾 Exportar PDF</button>
+              <button class="btn btn-secondary" id="btnExpEstObraXls">📊 Exportar Excel</button>
+            </div>
           </div>
-        </div>
-      `).join("")}</div>`;
+        `;
+        const inp = document.getElementById("inpBuscarInstObra");
+        if(inp){
+          inp.addEventListener("input", ()=>{
+            filtro = inp.value; pintarFilas();
+            const inpN = document.getElementById("inpBuscarInstObra");
+            if(inpN){ inpN.focus(); const p = inpN.value.length; inpN.setSelectionRange(p,p); }
+          });
+        }
+        const bPdf = document.getElementById("btnExpEstObraPdf");
+        if(bPdf) bPdf.addEventListener("click", ()=> generarPdfEstadisticas(obraData.nombre||"Obra", visibles));
+        const bXls = document.getElementById("btnExpEstObraXls");
+        if(bXls) bXls.addEventListener("click", ()=> generarExcelEstadisticas(`estadisticas_${slug(obraData.nombre)}`, visibles));
+      }
+      pintarFilas();
     }).catch(err=> cont.innerHTML = `<div class="empty">Error cargando estadísticas: ${esc(err.message)}</div>`);
   }
 
@@ -1238,6 +1387,12 @@ function renderObraDetalle(obraId, tabInicial){
 
   const unsub2 = obraRef.collection("ventanas").orderBy("numero").onSnapshot(snap=>{
     ventanas = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    // Obra antigua sin el resumen de progreso todavía (creada antes de esta función): se calcula
+    // una vez, sola, sin coste extra — ya estamos leyendo estas mismas ventanas para la cuadrícula.
+    if(admin && obraData && obraData.progreso === undefined && !recalculando){
+      recalculando = true;
+      recalcularProgresoObra(obraId, ventanas).finally(()=> recalculando = false);
+    }
     pintar();
   }, err=> toast("Error: " + err.message));
   unsubscribers.push(unsub2);
@@ -1263,7 +1418,7 @@ function abrirAddVentanas(obraId, totalActual){
     closeModal();
     try{
       await crearVentanas(obraId, totalActual+1, totalActual+n);
-      await db.collection("obras").doc(obraId).update({ numVentanas: totalActual+n });
+      await db.collection("obras").doc(obraId).update({ numVentanas: firebase.firestore.FieldValue.increment(n) });
       toast(`${n} ventanas añadidas`);
     }catch(err){ toast("Error: " + err.message); }
   });
@@ -1355,7 +1510,7 @@ function abrirImportarExcel(obraId, numeroInicial){
 
 async function eliminarObra(obraId, obraData){
   if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
-  if(!confirmar(`¿Eliminar la obra "${obraData.nombre}"? Se borrarán todas sus ventanas, fotos, notas y planos. Esta acción no se puede deshacer.`)) return;
+  if(!confirmar(`¿Eliminar la obra "${obraData.nombre}"? Se borrarán todas sus ventanas, fotos, notas y documentos (planos y parte de fabricación). Esta acción no se puede deshacer.`)) return;
   toast("Eliminando obra…");
   try{
     const obraRef = db.collection("obras").doc(obraId);
@@ -1398,6 +1553,7 @@ function renderVentana(obraId, ventanaId){
   const vRef = obraRef.collection("ventanas").doc(ventanaId);
   let obraNombre = "";
   let ultimoV = null;
+  let fotoIncidenciaLista = null; // foto elegida para la incidencia que se está redactando, hasta que se guarda
 
   function pintar(v){
     ultimoV = v;
@@ -1405,7 +1561,10 @@ function renderVentana(obraId, ventanaId){
     setTopbar(`${obraNombre} · ${etiquetaCorta(v)}`, descripcionVentana(v), true);
     const estado = v.estado || estadoVacio();
     $app().innerHTML = `
-      <button class="link-btn" id="btnVolverObra" style="margin-bottom:10px;">⬅ Volver a la obra</button>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:6px;">
+        <button class="link-btn" id="btnVolverObra">⬅ Volver a la obra</button>
+        <button class="link-btn" id="btnVerFabricacion">📋 Parte de fabricación</button>
+      </div>
       <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
           <h2 style="font-size:19px;">Ventana ${esc(etiquetaCorta(v))}</h2>
@@ -1454,12 +1613,56 @@ function renderVentana(obraId, ventanaId){
         </div>
         ${!(v.fotos||[]).length ? `<p class="muted" style="margin-top:8px;">Sin fotos todavía.</p>` : ""}
       </div>
+
+      <div class="card">
+        <div class="section-title">⚠️ Incidencias</div>
+        <p class="muted" style="margin-top:-4px;margin-bottom:10px;">Cualquier problema con esta ventana: rotura, medida incorrecta, falta de material… con foto si hace falta.</p>
+        <textarea id="inpIncidencia" placeholder="Describe la incidencia…"></textarea>
+        <input type="file" id="inpFotoIncidencia" accept="image/*" capture="environment" style="display:none;" />
+        <button class="btn btn-secondary btn-block" id="btnFotoIncidencia" type="button" style="margin-top:8px;">📷 Añadir foto (opcional)</button>
+        <div id="fotoIncidenciaEstado" class="muted" style="margin:6px 0;">${fotoIncidenciaLista ? "Lista: " + esc(fotoIncidenciaLista.name) : ""}</div>
+        <button class="btn btn-primary btn-block" id="btnAddIncidencia" style="margin-top:8px;">Registrar incidencia</button>
+        <div style="margin-top:14px;">
+          ${(v.incidencias||[]).length ? (v.incidencias||[]).slice().reverse().map((inc,i)=>{
+            const idxReal = v.incidencias.length-1-i;
+            return `
+            <div class="nota-item incidencia-item ${inc.resuelta?"resuelta":"pendiente-incidencia"}">
+              <button class="del" data-idx="${idxReal}">✕</button>
+              <div class="meta" style="font-size:12px;color:var(--gris-600);margin-bottom:4px;">
+                <b style="color:var(--gris-800);">${esc(inc.autor||"—")}</b> · ${fechaCorta(inc.fecha)}
+                ${inc.resuelta ? ` · <span style="color:var(--verde);font-weight:600;">Resuelta</span>` : ` · <span style="color:var(--naranja);font-weight:600;">Pendiente</span>`}
+              </div>
+              <div>${esc(inc.texto)}</div>
+              ${inc.fotoUrl ? `<a href="${esc(inc.fotoUrl)}" target="_blank" rel="noopener"><img src="${esc(inc.fotoUrl)}" style="max-width:150px;border-radius:8px;margin-top:8px;display:block;" loading="lazy" /></a>` : ""}
+              <button class="link-btn" data-toggleinc="${idxReal}" style="margin-top:8px;font-size:12.5px;">${inc.resuelta ? "Marcar como pendiente" : "Marcar como resuelta"}</button>
+            </div>
+          `;}).join("") : `<p class="muted">Sin incidencias registradas.</p>`}
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="section-title">✅ Entrega al cliente</div>
+        ${v.entrega ? `
+          <p class="muted" style="margin-top:-4px;">Entregada el ${fechaCorta(v.entrega.fecha)}, firmada por <b style="color:var(--gris-800);">${esc(v.entrega.firmante)}</b>.</p>
+          ${v.entrega.firmaUrl ? `<img src="${esc(v.entrega.firmaUrl)}" alt="Firma del cliente" style="max-width:220px;border:1.5px solid var(--gris-200);border-radius:8px;background:#fff;display:block;margin:10px 0;" />` : ""}
+          <button class="link-btn" id="btnQuitarFirma" style="color:var(--rojo);">🗑️ Quitar firma de entrega</button>
+        ` : `
+          <p class="muted" style="margin-top:-4px;margin-bottom:10px;">Cuando el cliente reciba la ventana, puede firmar aquí como justificante de entrega.</p>
+          <label class="field"><span>Nombre de quien firma</span><input type="text" id="inpFirmante" placeholder="Nombre del cliente" /></label>
+          <div class="firma-pad-wrap"><canvas id="canvasFirma" class="firma-pad"></canvas></div>
+          <div class="btn-row" style="margin-top:6px;">
+            <button class="btn btn-outline" id="btnBorrarFirma" type="button">Borrar</button>
+            <button class="btn btn-primary" id="btnGuardarFirma" type="button">Guardar firma</button>
+          </div>
+        `}
+      </div>
     `;
 
     document.querySelectorAll(".etapa-row").forEach(row=>{
       row.addEventListener("click", ()=> toggleEtapa(obraId, obraNombre, vRef, ventanaId, etiquetaCorta(v), estado, row.dataset.e));
     });
     document.getElementById("btnVolverObra").addEventListener("click", ()=> navegar(`#/obra/${obraId}`));
+    document.getElementById("btnVerFabricacion").addEventListener("click", ()=> navegar(`#/obra/${obraId}/planos`));
     document.getElementById("btnEditarAsignacion").addEventListener("click", ()=> abrirEditarAsignacion(obraId, ventanaId, vRef, v));
     document.getElementById("btnAddNota").addEventListener("click", ()=> addNota(vRef));
     document.getElementById("btnFoto").addEventListener("click", ()=> document.getElementById("inpFoto").click());
@@ -1467,9 +1670,85 @@ function renderVentana(obraId, ventanaId){
     document.querySelectorAll("#fotoGrid .del").forEach(b=>{
       b.addEventListener("click", ()=> borrarFoto(vRef, v.fotos[parseInt(b.dataset.idx,10)]));
     });
-    document.querySelectorAll(".nota-item .del").forEach(b=>{
+    document.querySelectorAll(".nota-item:not(.incidencia-item) .del").forEach(b=>{
       b.addEventListener("click", ()=> borrarNota(vRef, v.notas[parseInt(b.dataset.idx,10)]));
     });
+    document.getElementById("btnFotoIncidencia").addEventListener("click", ()=> document.getElementById("inpFotoIncidencia").click());
+    document.getElementById("inpFotoIncidencia").addEventListener("change", (e)=>{
+      fotoIncidenciaLista = e.target.files && e.target.files[0] ? e.target.files[0] : null;
+      document.getElementById("fotoIncidenciaEstado").textContent = fotoIncidenciaLista ? "Lista: " + fotoIncidenciaLista.name : "";
+    });
+    document.getElementById("btnAddIncidencia").addEventListener("click", async ()=>{
+      const texto = document.getElementById("inpIncidencia").value.trim();
+      if(!texto){ toast("Describe la incidencia primero"); return; }
+      const btn = document.getElementById("btnAddIncidencia");
+      btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Guardando…`;
+      const autor = nombreUsuario() || "—";
+      try{
+        let fotoUrl = "";
+        if(fotoIncidenciaLista){
+          if(CLOUDINARY_OK){ const { url } = await subirArchivoCloudinary(fotoIncidenciaLista); fotoUrl = url; }
+          else toast("Falta configurar Cloudinary: la foto no se pudo subir (ver README.md)");
+        }
+        await vRef.update({
+          incidencias: firebase.firestore.FieldValue.arrayUnion({ texto, fotoUrl, autor, fecha: new Date().toISOString(), resuelta: false }),
+          actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        fotoIncidenciaLista = null;
+        toast("Incidencia registrada");
+      }catch(err){ toast("Error: " + err.message); }
+      btn.disabled = false; btn.textContent = "Registrar incidencia";
+    });
+    document.querySelectorAll("[data-toggleinc]").forEach(b=>{
+      b.addEventListener("click", async ()=>{
+        const idx = parseInt(b.dataset.toggleinc,10);
+        const nuevas = (v.incidencias||[]).map((inc,i)=> i===idx ? {...inc, resuelta: !inc.resuelta} : inc);
+        try{ await vRef.update({ incidencias: nuevas }); }catch(err){ toast("Error: " + err.message); }
+      });
+    });
+    document.querySelectorAll(".incidencia-item .del").forEach(b=>{
+      b.addEventListener("click", async ()=>{
+        if(!confirmar("¿Eliminar esta incidencia?")) return;
+        const idx = parseInt(b.dataset.idx,10);
+        const nuevas = (v.incidencias||[]).filter((_,i)=> i!==idx);
+        try{ await vRef.update({ incidencias: nuevas }); }catch(err){ toast("Error: " + err.message); }
+      });
+    });
+
+    if(!v.entrega){
+      const canvasFirma = document.getElementById("canvasFirma");
+      const firmaPad = canvasFirma ? inicializarFirmaPad(canvasFirma) : null;
+      const btnBorrarFirma = document.getElementById("btnBorrarFirma");
+      if(btnBorrarFirma) btnBorrarFirma.addEventListener("click", ()=>{ if(firmaPad) firmaPad.limpiar(); });
+      const btnGuardarFirma = document.getElementById("btnGuardarFirma");
+      if(btnGuardarFirma) btnGuardarFirma.addEventListener("click", async ()=>{
+        const firmante = (document.getElementById("inpFirmante").value || "").trim();
+        if(!firmante){ toast("Indica el nombre de quien firma"); return; }
+        if(!firmaPad || firmaPad.estaVacia()){ toast("Falta la firma"); return; }
+        if(!CLOUDINARY_OK){ toast("Falta configurar Cloudinary: no se puede guardar la firma (ver README.md)"); return; }
+        btnGuardarFirma.disabled = true; btnGuardarFirma.innerHTML = `<span class="spin"></span> Guardando…`;
+        try{
+          const blob = await firmaPad.obtenerBlob();
+          if(!blob) throw new Error("No se pudo procesar la firma");
+          const { url } = await subirArchivoCloudinary(new File([blob], "firma.png", { type: "image/png" }));
+          await vRef.update({
+            entrega: { firmante, firmaUrl: url, fecha: new Date().toISOString(), autor: nombreUsuario() || "—" },
+            actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
+          });
+          toast("Entrega registrada");
+        }catch(err){
+          toast("Error guardando la firma: " + err.message);
+          btnGuardarFirma.disabled = false; btnGuardarFirma.textContent = "Guardar firma";
+        }
+      });
+    } else {
+      const btnQuitarFirma = document.getElementById("btnQuitarFirma");
+      if(btnQuitarFirma) btnQuitarFirma.addEventListener("click", async ()=>{
+        if(!confirmar("¿Quitar la firma de entrega de esta ventana?")) return;
+        try{ await vRef.update({ entrega: null }); toast("Firma eliminada"); }
+        catch(err){ toast("Error: " + err.message); }
+      });
+    }
   }
 
   function pintarAsignacion(v){
@@ -1487,7 +1766,7 @@ function renderVentana(obraId, ventanaId){
       </div>
     `;
     document.getElementById("btnVolverObra").addEventListener("click", ()=> navegar(`#/obra/${obraId}`));
-    document.getElementById("btnGuardarAsignacion").addEventListener("click", ()=> guardarAsignacion(obraId, ventanaId, vRef, true));
+    document.getElementById("btnGuardarAsignacion").addEventListener("click", ()=> guardarAsignacion(obraId, ventanaId, vRef, true, v));
   }
 
   obraRef.get().then(d=>{
@@ -1524,7 +1803,7 @@ function abrirEditarAsignacion(obraId, ventanaId, vRef, v){
     ${formularioAsignacionHtml(v)}
     <button class="btn btn-primary btn-block" id="btnGuardarAsignacion" style="margin-top:10px;">Guardar</button>
   `);
-  document.getElementById("btnGuardarAsignacion").addEventListener("click", ()=> guardarAsignacion(obraId, ventanaId, vRef, false));
+  document.getElementById("btnGuardarAsignacion").addEventListener("click", ()=> guardarAsignacion(obraId, ventanaId, vRef, false, v));
 }
 
 // Busca ventanas ya existentes que puedan coincidir con los datos introducidos, para poder vincular
@@ -1543,18 +1822,45 @@ async function buscarVentanasCoincidentes(obraId, ventanaId, { casa, planta, num
   }catch(e){ return []; }
 }
 
-async function vincularVentana(obraId, ventanaId, vRef, existenteId){
+// Combina el avance real de "origenData" (etapas marcadas, fotos, notas, incidencias, entrega
+// firmada) dentro de la ventana "destino", y deja el documento de origen como un simple alias
+// (aliasTo) que apunta a ella. Sirve tanto para vincular un QR genérico recién creado (sin
+// histórico todavía, así que fusionar no cambia nada) como para corregir la identificación de una
+// ventana que ya tuviera trabajo hecho, sin perder ese trabajo por el camino.
+async function fusionarVentanas(obraId, origenId, origenData, destino){
+  const destinoRef = db.collection("obras").doc(obraId).collection("ventanas").doc(destino.id);
+  const origenRef = db.collection("obras").doc(obraId).collection("ventanas").doc(origenId);
+
+  const estadoCombinado = {};
+  ETAPAS.forEach(e => estadoCombinado[e] = !!((destino.estado && destino.estado[e]) || (origenData.estado && origenData.estado[e])));
+  const notas = [...(destino.notas||[]), ...(origenData.notas||[])];
+  const fotos = [...(destino.fotos||[]), ...(origenData.fotos||[])];
+  const incidencias = [...(destino.incidencias||[]), ...(origenData.incidencias||[])];
+  const entrega = destino.entrega || origenData.entrega || null;
+
+  await destinoRef.update({
+    estado: estadoCombinado, notas, fotos, incidencias, entrega,
+    actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
+  });
+  await origenRef.update({
+    aliasTo: destino.id, asignada: true,
+    actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
+  });
+  db.collection("obras").doc(obraId).update({ numVentanas: firebase.firestore.FieldValue.increment(-1) }).catch(()=>{});
+  // El estado combinado puede haber cambiado los contadores agregados de la obra (progreso), así
+  // que se recalculan desde cero para que el % y los contadores por etapa sigan siendo exactos.
   try{
-    await vRef.update({
-      aliasTo: existenteId,
-      asignada: true,
-      actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
-    });
-    // Este código ya no cuenta como una ventana física aparte: era un QR genérico en blanco.
-    db.collection("obras").doc(obraId).update({ numVentanas: firebase.firestore.FieldValue.increment(-1) }).catch(()=>{});
-    toast("Código QR vinculado a la ventana existente");
+    const snap = await db.collection("obras").doc(obraId).collection("ventanas").get();
+    await recalcularProgresoObra(obraId, snap.docs.map(d=>({id:d.id, ...d.data()})));
+  }catch(e){ /* no crítico */ }
+}
+
+async function vincularVentana(obraId, ventanaId, vRef, destinoDoc, origenData){
+  try{
+    await fusionarVentanas(obraId, ventanaId, origenData || {}, { id: destinoDoc.id, ...destinoDoc.data() });
+    toast("Vinculado a la ventana existente");
     closeModal();
-    navegar(`#/ventana/${obraId}/${existenteId}`);
+    navegar(`#/ventana/${obraId}/${destinoDoc.id}`);
   }catch(err){ toast("Error: " + err.message); }
 }
 
@@ -1573,13 +1879,14 @@ async function guardarVentanaNueva(obraId, ventanaId, vRef, datos){
 // Cuando el mismo número de plano coincide con varias ventanas ya existentes (por ejemplo, casas
 // distintas que reutilizan la misma numeración de ventana), se deja elegir cuál es la correcta en
 // vez de adivinar.
-function abrirSelectorVinculo(obraId, ventanaId, vRef, candidatos, datos){
+function abrirSelectorVinculo(obraId, ventanaId, vRef, candidatos, datos, origenData){
   const lista = candidatos.slice(0, 25);
   openModal(`
     <h3>¿Cuál de estas es la ventana?</h3>
     <p class="muted" style="margin-bottom:14px;">
       Hay ${candidatos.length} ventanas ya existentes con el número ${esc(datos.numeroPlano)}${datos.casa?` (y casa ${esc(datos.casa)})`:""}.
-      Elige la que corresponda para vincular este código QR a ella, o crea una nueva si ninguna es correcta.
+      Elige la que corresponda para vincular esta ventana a ella (se combina el avance de ambas), o
+      crea una nueva si ninguna es correcta.
     </p>
     <div style="display:flex;flex-direction:column;gap:8px;">
       ${lista.map((d,i)=>{
@@ -1593,23 +1900,26 @@ function abrirSelectorVinculo(obraId, ventanaId, vRef, candidatos, datos){
     <button class="btn btn-secondary btn-block" id="btnNingunaCoincide" style="margin-top:14px;">Ninguna: crear ventana nueva</button>
   `);
   document.querySelectorAll("[data-idx]").forEach(b=>{
-    b.addEventListener("click", ()=> vincularVentana(obraId, ventanaId, vRef, lista[parseInt(b.dataset.idx,10)].id));
+    b.addEventListener("click", ()=> vincularVentana(obraId, ventanaId, vRef, lista[parseInt(b.dataset.idx,10)], origenData));
   });
   document.getElementById("btnNingunaCoincide").addEventListener("click", ()=> guardarVentanaNueva(obraId, ventanaId, vRef, datos));
 }
 
-// permitirVincular: true solo en la primera asignación de un QR genérico (pintarAsignacion). Si en ese
-// caso los datos coinciden con una o varias ventanas que ya existen (normalmente importadas del Excel),
-// este código QR se vincula a la que corresponda (aliasTo) en vez de crear una ventana nueva duplicada.
+// permitirVincular: true en la primera asignación de un QR genérico (pintarAsignacion), false al
+// corregir después la identificación de una ventana ya asignada (abrirEditarAsignacion). En ambos
+// casos, si los datos coinciden con una ventana que ya existe (normalmente importada del Excel, o
+// una ventana real cuyo código se escribió mal la primera vez), se ofrece VINCULAR: el avance de
+// ambas (etapas, fotos, notas, incidencias y entrega firmada) se combina en la ventana correcta, y
+// esta queda como un simple alias que redirige a ella — no se pierde ningún trabajo ya hecho.
 // Basta con conocer el número de plano (no hace falta la casa) para que la app busque la coincidencia.
-// Al editar una ventana ya asignada (abrirEditarAsignacion) no se vincula: solo se avisa, por si es un error.
-async function guardarAsignacion(obraId, ventanaId, vRef, permitirVincular){
+async function guardarAsignacion(obraId, ventanaId, vRef, permitirVincular, origenData){
   const casa = document.getElementById("inpAsigCasa").value.trim();
   const planta = document.getElementById("inpAsigPlanta").value.trim();
   const numeroPlano = document.getElementById("inpAsigNumero").value.trim();
   const referencia = document.getElementById("inpAsigReferencia").value.trim();
   if(!casa && !numeroPlano){ toast("Indica al menos la casa o el número de plano"); return; }
   const datos = { casa, planta, numeroPlano, referencia };
+  const origen = origenData || {};
 
   const btn = document.getElementById("btnGuardarAsignacion");
   const labelOriginal = btn ? btn.textContent : "Guardar";
@@ -1624,36 +1934,33 @@ async function guardarAsignacion(obraId, ventanaId, vRef, permitirVincular){
     return;
   }
 
-  if(!permitirVincular){
-    // Edición de una ventana ya real: solo avisamos, no vinculamos automáticamente (evita fusionar
-    // por accidente el historial de dos ventanas distintas).
-    const c = candidatos[0].data();
-    if(!confirmar(`Ya hay otra ventana marcada como Casa ${c.casa||"—"}${c.planta?", Planta "+c.planta:""}, Nº ${c.numeroPlano||numeroPlano}. ¿Guardar igualmente?`)){
-      if(btn){ btn.disabled = false; btn.textContent = labelOriginal; }
-      return;
-    }
-    if(btn){ btn.innerHTML = `<span class="spin"></span> Guardando…`; }
-    await guardarVentanaNueva(obraId, ventanaId, vRef, datos);
-    if(btn){ btn.disabled = false; btn.textContent = labelOriginal; }
-    return;
-  }
-
   if(btn){ btn.disabled = false; btn.textContent = labelOriginal; }
 
   if(candidatos.length === 1){
     const c = candidatos[0].data();
+    const detalle = `Casa ${c.casa||"—"}${c.planta?", Planta "+c.planta:""}, Nº ${c.numeroPlano||numeroPlano}${c.referencia?" ("+c.referencia+")":""}`;
     const vincular = confirmar(
-      `Ya existe la ventana Casa ${c.casa||"—"}${c.planta?", Planta "+c.planta:""}, Nº ${c.numeroPlano||numeroPlano}${c.referencia?" ("+c.referencia+")":""} (probablemente importada del Excel).\n\n` +
-      `Aceptar = vincular este código QR a esa ventana ya existente (recomendado, evita duplicados).\n` +
-      `Cancelar = crear esta como una ventana nueva independiente.`
+      permitirVincular
+        ? `Ya existe la ventana ${detalle} (probablemente importada del Excel).\n\n` +
+          `Aceptar = vincular este código QR a esa ventana ya existente (recomendado, evita duplicados).\n` +
+          `Cancelar = crear esta como una ventana nueva independiente.`
+        : `Ya hay otra ventana con estos datos: ${detalle}.\n\n` +
+          `Aceptar = vincular esta ventana con esa (se combina el avance de ambas: etapas marcadas, ` +
+          `fotos, notas, incidencias y entrega firmada — recomendado si el código se escribió mal).\n` +
+          `Cancelar = guardar igualmente esta ventana como una independiente (por si de verdad son dos ventanas distintas).`
     );
-    if(vincular){ await vincularVentana(obraId, ventanaId, vRef, candidatos[0].id); return; }
+    if(vincular){
+      if(btn){ btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Vinculando…`; }
+      await vincularVentana(obraId, ventanaId, vRef, candidatos[0], origen);
+      if(btn){ btn.disabled = false; btn.textContent = labelOriginal; }
+      return;
+    }
     await guardarVentanaNueva(obraId, ventanaId, vRef, datos);
     return;
   }
 
   // Varias ventanas comparten ese número (normal si no se indicó la casa): que el usuario elija cuál es.
-  abrirSelectorVinculo(obraId, ventanaId, vRef, candidatos, datos);
+  abrirSelectorVinculo(obraId, ventanaId, vRef, candidatos, datos, origen);
 }
 
 async function toggleEtapa(obraId, obraNombre, vRef, ventanaId, ventanaEtiqueta, estadoActual, etapa){
@@ -1673,6 +1980,14 @@ async function toggleEtapa(obraId, obraNombre, vRef, ventanaId, ventanaEtiqueta,
   try{
     await vRef.update({ estado: nuevo, actualizadoEn: firebase.firestore.FieldValue.serverTimestamp() });
     cambiadas.forEach(e => registrarEvento(obraId, obraNombre, ventanaId, ventanaEtiqueta, e, nuevo[e]));
+    // El resumen de progreso vive en el propio doc de la obra (progreso.<etapa>), para poder ver el
+    // % y los contadores sin tener que releer todas las ventanas cada vez. Aquí solo lo ajustamos en
+    // +1/-1 por cada etapa que ha cambiado de verdad — el listener de la obra recoge el cambio al vuelo.
+    if(cambiadas.length){
+      const incrementos = {};
+      cambiadas.forEach(e => { incrementos[`progreso.${e}`] = firebase.firestore.FieldValue.increment(nuevo[e] ? 1 : -1); });
+      db.collection("obras").doc(obraId).update(incrementos).catch(()=>{});
+    }
     // Cada vez que se marca (no desmarca) algo, ofrecemos foto + nota al momento.
     // Es un aviso fuerte pero saltable: no bloquea si el instalador no tiene foto o conexión.
     const activadas = cambiadas.filter(e => nuevo[e] === true);
@@ -1820,29 +2135,75 @@ async function borrarFoto(vRef, foto){
   }catch(err){ toast("Error: " + err.message); }
 }
 
-async function subirPlano(obraId, files){
+// Panel de firma a mano (justificante de entrega al cliente). Usa Pointer Events para que
+// funcione igual con el dedo (táctil) que con ratón, sin depender de ninguna librería externa.
+function inicializarFirmaPad(canvas){
+  const ctx = canvas.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = Math.max(1, Math.round(rect.width * dpr));
+  canvas.height = Math.max(1, Math.round(rect.height * dpr));
+  ctx.scale(dpr, dpr);
+  ctx.lineWidth = 2.2; ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.strokeStyle = "#1f2937";
+
+  let dibujando = false, huboTrazo = false, ultimoX = 0, ultimoY = 0;
+  function posicion(e){
+    const r = canvas.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+  function empezarTrazo(e){
+    dibujando = true;
+    const p = posicion(e);
+    ultimoX = p.x; ultimoY = p.y;
+    if(canvas.setPointerCapture){ try{ canvas.setPointerCapture(e.pointerId); }catch(err){} }
+  }
+  function seguirTrazo(e){
+    if(!dibujando) return;
+    const p = posicion(e);
+    ctx.beginPath(); ctx.moveTo(ultimoX, ultimoY); ctx.lineTo(p.x, p.y); ctx.stroke();
+    ultimoX = p.x; ultimoY = p.y; huboTrazo = true;
+  }
+  function terminarTrazo(){ dibujando = false; }
+
+  canvas.addEventListener("pointerdown", empezarTrazo);
+  canvas.addEventListener("pointermove", seguirTrazo);
+  canvas.addEventListener("pointerup", terminarTrazo);
+  canvas.addEventListener("pointerleave", terminarTrazo);
+  canvas.addEventListener("pointercancel", terminarTrazo);
+
+  return {
+    estaVacia: ()=> !huboTrazo,
+    limpiar: ()=>{ ctx.clearRect(0, 0, canvas.width, canvas.height); huboTrazo = false; },
+    obtenerBlob: ()=> new Promise(resolve => canvas.toBlob(resolve, "image/png"))
+  };
+}
+
+async function subirPlano(obraId, files, categoria, ambito){
   if(!files || !files.length) return;
   if(!CLOUDINARY_OK){
-    toast("Falta configurar Cloudinary para poder subir planos (ver README.md)");
+    toast("Falta configurar Cloudinary para poder subir documentos (ver README.md)");
     document.getElementById("inpPlano").value = "";
     return;
   }
   const subidoPor = nombreUsuario() || "—";
-  toast(`Subiendo ${files.length} plano(s)…`);
+  const esFabricacion = categoria === "fabricacion";
+  toast(`Subiendo ${files.length} documento(s)…`);
   const obraRef = db.collection("obras").doc(obraId);
   for(const file of files){
     try{
       const { url, publicId, resourceType } = await subirArchivoCloudinary(file);
       await obraRef.collection("planos").add({
-        nombre: file.name || "Plano",
+        nombre: file.name || (esFabricacion ? "Parte de fabricación" : "Plano"),
         url, publicId,
         tipo: resourceType === "image" ? "image" : "pdf",
+        categoria: esFabricacion ? "fabricacion" : "plano",
+        ambito: esFabricacion ? (ambito || "") : "",
         subidoPor,
         fecha: new Date().toISOString()
       });
-    }catch(err){ toast("Error subiendo plano: " + err.message); }
+    }catch(err){ toast("Error subiendo documento: " + err.message); }
   }
-  toast("Planos subidos");
+  toast("Documento(s) subido(s)");
   document.getElementById("inpPlano").value = "";
 }
 
@@ -1989,25 +2350,96 @@ function agregarPorInstalador(eventos){
   return [...map.entries()].map(([nombre,r])=>({nombre,...r})).sort((a,b)=> b.total - a.total);
 }
 
+// Fila de Excel/PDF para el export de estadísticas por instalador — comparte forma entre la vista
+// global y la de una obra concreta.
+function filaExcelEstadistica(f){
+  return {
+    Instalador: f.nombre,
+    Instalada: f.instalada||0, Sellada: f.sellada||0, Acristalada: f.acristalada||0,
+    Composite: f.composite||0, Terminada: f.terminada||0, Total: f.total||0,
+    "Última actividad": fechaCorta(f.ultima)
+  };
+}
+
+function generarExcelEstadisticas(nombreArchivo, filas){
+  if(!filas.length){ toast("No hay actividad que exportar"); return; }
+  const ws = XLSX.utils.json_to_sheet(filas.map(filaExcelEstadistica));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Instaladores");
+  XLSX.writeFile(wb, `${nombreArchivo}.xlsx`);
+  toast("Excel generado");
+}
+
+function generarPdfEstadisticas(titulo, filas){
+  if(!filas.length){ toast("No hay actividad que exportar"); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const margen = 15;
+  let y = margen;
+  doc.setFontSize(16); doc.setTextColor(20);
+  doc.text(`Estadísticas por instalador — ${titulo}`, margen, y); y += 6;
+  doc.setFontSize(10); doc.setTextColor(120);
+  doc.text(`Generado: ${new Date().toLocaleString("es-ES")}`, margen, y); y += 10;
+  doc.setDrawColor(200); doc.line(margen, y, 210-margen, y); y += 8;
+
+  for(const f of filas){
+    if(y > 260){ doc.addPage(); y = margen; }
+    doc.setFontSize(12); doc.setTextColor(20);
+    doc.text(f.nombre, margen, y); y += 5.5;
+    doc.setFontSize(9.5); doc.setTextColor(90);
+    doc.text(`Instalada ${f.instalada||0} · Sellada ${f.sellada||0} · Acristalada ${f.acristalada||0} · Composite ${f.composite||0} · Terminada ${f.terminada||0}  (total ${f.total||0})`, margen, y); y += 5;
+    doc.text(`Última actividad: ${fechaCorta(f.ultima) || "—"}`, margen, y); y += 8;
+    doc.setDrawColor(230); doc.line(margen, y-3, 210-margen, y-3);
+  }
+  doc.save(`estadisticas_${slug(titulo)}.pdf`);
+  toast("PDF generado");
+}
+
 function renderEstadisticas(){
   $app().innerHTML = `<div class="empty">Cargando estadísticas…</div>`;
   db.collection("eventos").orderBy("fecha","desc").limit(3000).get().then(snap=>{
     const eventos = snap.docs.map(d=>d.data());
     const filas = agregarPorInstalador(eventos);
-    $app().innerHTML = `
-      <div class="card">
-        <div class="section-title">Resumen por instalador</div>
-        <p class="muted" style="margin-bottom:10px;">🪟 Instalada · 🧴 Sellada · 🔷 Acristalada · 🧱 Composite · ✅ Terminada</p>
-        ${!filas.length ? `<div class="empty">Todavía no hay actividad registrada.</div>` : filas.map(f=>`
-          <div class="userrow">
-            <div class="info"><h3>${esc(f.nombre)}</h3><p class="muted">Última actividad: ${fechaCorta(f.ultima)}</p></div>
-            <div class="stat-mini">
-              <span>🪟 ${f.instalada}</span><span>🧴 ${f.sellada}</span><span>🔷 ${f.acristalada}</span><span>🧱 ${f.composite}</span><span>✅ ${f.terminada}</span>
+    let filtro = "";
+
+    function pintar(){
+      const norm = normalizarCabecera(filtro);
+      const visibles = norm ? filas.filter(f=> normalizarCabecera(f.nombre).includes(norm)) : filas;
+      $app().innerHTML = `
+        <div class="card">
+          <div class="section-title">Resumen por instalador</div>
+          ${filas.length ? `<label class="field"><span>Buscar instalador</span><input type="text" id="inpBuscarInstalador" value="${esc(filtro)}" placeholder="Nombre del instalador…" /></label>` : ""}
+          <p class="muted" style="margin-bottom:10px;">🪟 Instalada · 🧴 Sellada · 🔷 Acristalada · 🧱 Composite · ✅ Terminada</p>
+          ${!visibles.length ? `<div class="empty">${filas.length ? "Ningún instalador coincide con la búsqueda." : "Todavía no hay actividad registrada."}</div>` : visibles.map(f=>`
+            <div class="userrow">
+              <div class="info"><h3>${esc(f.nombre)}</h3><p class="muted">Última actividad: ${fechaCorta(f.ultima)}</p></div>
+              <div class="stat-mini">
+                <span>🪟 ${f.instalada}</span><span>🧴 ${f.sellada}</span><span>🔷 ${f.acristalada}</span><span>🧱 ${f.composite}</span><span>✅ ${f.terminada}</span>
+              </div>
             </div>
-          </div>
-        `).join("")}
-      </div>
-    `;
+          `).join("")}
+          ${filas.length ? `
+            <div class="btn-row" style="margin-top:14px;">
+              <button class="btn btn-secondary" id="btnExpEstPdf">🧾 Exportar PDF</button>
+              <button class="btn btn-secondary" id="btnExpEstXls">📊 Exportar Excel</button>
+            </div>
+          ` : ""}
+        </div>
+      `;
+      const inp = document.getElementById("inpBuscarInstalador");
+      if(inp){
+        inp.addEventListener("input", ()=>{
+          filtro = inp.value; pintar();
+          const inpN = document.getElementById("inpBuscarInstalador");
+          if(inpN){ inpN.focus(); const p = inpN.value.length; inpN.setSelectionRange(p,p); }
+        });
+      }
+      const bPdf = document.getElementById("btnExpEstPdf");
+      if(bPdf) bPdf.addEventListener("click", ()=> generarPdfEstadisticas("Todas las obras", visibles));
+      const bXls = document.getElementById("btnExpEstXls");
+      if(bXls) bXls.addEventListener("click", ()=> generarExcelEstadisticas("estadisticas_instaladores", visibles));
+    }
+    pintar();
   }).catch(err=> $app().innerHTML = `<div class="empty">Error cargando estadísticas: ${esc(err.message)}</div>`);
 }
 
@@ -2235,7 +2667,7 @@ async function generarPdfPendientes(obraId, obraData, ventanas, ambito){
   doc.text(`${obraData.direccion||""}`, margen, y); y += 5;
   doc.text(`Generado: ${new Date().toLocaleString("es-ES")}`, margen, y); y += 10;
 
-  const pendientes = ordenarVentanas(ventanas.filter(v => pasosCompletados(v.estado) < 4));
+  const pendientes = ordenarVentanas(ventanas.filter(v => pasosCompletados(v.estado) < ETAPAS.length));
   const total = ventanas.length, terminadas = total - pendientes.length;
 
   doc.setFontSize(11); doc.setTextColor(20);
@@ -2289,7 +2721,7 @@ function filaExcelVentana(v){
 
 function generarExcelPendientes(obraData, ventanas, ambito){
   if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
-  const pendientes = ordenarVentanas(ventanas.filter(v => pasosCompletados(v.estado) < 4));
+  const pendientes = ordenarVentanas(ventanas.filter(v => pasosCompletados(v.estado) < ETAPAS.length));
   if(!pendientes.length){ toast("No hay ventanas pendientes en ese ámbito"); return; }
   const rows = pendientes.map(v=>({
     ...filaExcelVentana(v),
@@ -2301,6 +2733,402 @@ function generarExcelPendientes(obraData, ventanas, ambito){
   const sufijo = ambito ? `_Planta_${slug(ambito)}` : "";
   XLSX.writeFile(wb, `Pendientes_${slug(obraData.nombre)}${sufijo}_${new Date().toISOString().slice(0,10)}.xlsx`);
   toast("Excel de pendientes generado");
+}
+
+// Descarga una imagen (p.ej. una foto de Cloudinary) y la convierte a data URL para poder
+// incrustarla en el PDF con jsPDF. Si la descarga falla (sin red, CORS, foto borrada…) se omite
+// la imagen sin romper el resto del informe.
+async function urlADataUrl(url){
+  try{
+    const resp = await fetch(url);
+    if(!resp.ok) return null;
+    const blob = await resp.blob();
+    return await new Promise(resolve=>{
+      const reader = new FileReader();
+      reader.onload = ()=> resolve(reader.result);
+      reader.onerror = ()=> resolve(null);
+      reader.readAsDataURL(blob);
+    });
+  }catch(e){ return null; }
+}
+function formatoImagenDataUrl(dataUrl){
+  const m = /^data:image\/(\w+);/.exec(dataUrl || "");
+  if(!m) return "JPEG";
+  const t = m[1].toUpperCase();
+  return t === "JPG" ? "JPEG" : t;
+}
+
+function abrirExportarIncidencias(obraId, obraData, ventanas){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  const total = ventanas.reduce((n,v)=> n + (v.incidencias||[]).length, 0);
+  if(!total){ toast("Esta obra no tiene incidencias registradas todavía"); return; }
+  openModal(`
+    <h3>Exportar incidencias</h3>
+    <p class="muted" style="margin-bottom:14px;">${total} incidencia${total===1?"":"s"} registrada${total===1?"":"s"}, agrupadas por casa y ventana.</p>
+    <div class="btn-row">
+      <button class="btn btn-secondary" id="btnExpIncPdf">🧾 Exportar PDF</button>
+      <button class="btn btn-secondary" id="btnExpIncXls">📊 Exportar Excel</button>
+    </div>
+  `);
+  document.getElementById("btnExpIncPdf").addEventListener("click", ()=>{
+    closeModal();
+    generarPdfIncidencias(obraId, obraData, ventanas);
+  });
+  document.getElementById("btnExpIncXls").addEventListener("click", ()=>{
+    closeModal();
+    generarExcelIncidencias(obraData, ventanas);
+  });
+}
+
+async function generarPdfIncidencias(obraId, obraData, ventanas){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  const conIncidencias = ordenarVentanas(ventanas.filter(v => (v.incidencias||[]).length));
+  if(!conIncidencias.length){ toast("No hay incidencias registradas en esta obra"); return; }
+  toast("Generando PDF de incidencias…");
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const margen = 15, anchoUtil = 210 - margen*2;
+  let y = margen;
+
+  doc.setFontSize(16); doc.setTextColor(20);
+  doc.text(`Incidencias — ${obraData.nombre||""}`, margen, y); y += 6;
+  doc.setFontSize(10); doc.setTextColor(120);
+  doc.text(`${obraData.direccion||""}`, margen, y); y += 5;
+  doc.text(`Generado: ${new Date().toLocaleString("es-ES")}`, margen, y); y += 10;
+
+  const totalIncidencias = conIncidencias.reduce((n,v)=> n + (v.incidencias||[]).length, 0);
+  const pendientesCount = conIncidencias.reduce((n,v)=> n + (v.incidencias||[]).filter(i=>!i.resuelta).length, 0);
+  doc.setFontSize(11); doc.setTextColor(20);
+  doc.text(`${totalIncidencias} incidencias en ${conIncidencias.length} ventanas · ${pendientesCount} pendientes`, margen, y);
+  y += 8;
+  doc.setDrawColor(200); doc.line(margen, y, 210-margen, y); y += 8;
+
+  const agrupado = conIncidencias.some(v=>v.casa);
+  let casaActual = null;
+
+  for(const v of conIncidencias){
+    const casaKey = agrupado ? (v.casa || "Sin casa asignada") : null;
+    if(agrupado && casaKey !== casaActual){
+      if(y > 260){ doc.addPage(); y = margen; }
+      casaActual = casaKey;
+      if(y > margen) y += 3;
+      doc.setFontSize(13); doc.setTextColor(20);
+      doc.text(casaKey === "Sin casa asignada" ? casaKey : `Casa ${casaKey}`, margen, y);
+      y += 7;
+      doc.setDrawColor(225); doc.line(margen, y-4, 210-margen, y-4);
+    }
+    if(y > 270){ doc.addPage(); y = margen; casaActual = null; }
+    const detalle = [v.planta && `Planta ${v.planta}`, v.referencia].filter(Boolean).join(" · ");
+    doc.setFontSize(11.5); doc.setTextColor(20);
+    doc.text(`${etiquetaCorta(v)}${detalle ? " ("+detalle+")" : ""}`, margen + (agrupado?4:0), y);
+    y += 6;
+
+    const incidencias = (v.incidencias||[]).slice().reverse(); // más reciente primero
+    for(const inc of incidencias){
+      if(y > 265){ doc.addPage(); y = margen; }
+      const sangria = margen + (agrupado?8:4);
+      doc.setFontSize(9.5); doc.setTextColor(90);
+      doc.text(`${fechaCorta(inc.fecha)} · ${inc.autor||"—"} · ${inc.resuelta?"Resuelta":"Pendiente"}`, sangria, y);
+      y += 5;
+      doc.setFontSize(10.5); doc.setTextColor(30);
+      const lineasTexto = doc.splitTextToSize(inc.texto||"", anchoUtil - (sangria-margen));
+      doc.text(lineasTexto, sangria, y);
+      y += lineasTexto.length * 5 + 2;
+
+      if(inc.fotoUrl){
+        const dataUrl = await urlADataUrl(inc.fotoUrl);
+        if(dataUrl){
+          if(y > 230){ doc.addPage(); y = margen; }
+          try{
+            const formato = formatoImagenDataUrl(dataUrl);
+            const props = doc.getImageProperties(dataUrl);
+            const maxW = 55, maxH = 45;
+            let w = maxW, h = (props.height/props.width)*w;
+            if(h > maxH){ h = maxH; w = (props.width/props.height)*h; }
+            doc.addImage(dataUrl, formato, sangria, y, w, h);
+            y += h + 4;
+          }catch(e){ /* foto no decodificable: se omite sin romper el informe */ }
+        }
+      }
+      y += 3;
+    }
+    y += 2;
+  }
+
+  doc.save(`Incidencias_${slug(obraData.nombre)}_${new Date().toISOString().slice(0,10)}.pdf`);
+  toast("PDF de incidencias generado");
+}
+
+function generarExcelIncidencias(obraData, ventanas){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  const filas = [];
+  ordenarVentanas(ventanas.filter(v => (v.incidencias||[]).length)).forEach(v=>{
+    (v.incidencias||[]).slice().reverse().forEach(inc=>{
+      filas.push({
+        Casa: v.casa || "",
+        Planta: v.planta || "",
+        Ventana: etiquetaCorta(v),
+        Referencia: v.referencia || "",
+        Fecha: fechaCorta(inc.fecha),
+        Autor: inc.autor || "",
+        Incidencia: inc.texto || "",
+        Estado: inc.resuelta ? "Resuelta" : "Pendiente",
+        Foto: inc.fotoUrl || ""
+      });
+    });
+  });
+  if(!filas.length){ toast("No hay incidencias registradas en esta obra"); return; }
+  const ws = XLSX.utils.json_to_sheet(filas);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Incidencias");
+  XLSX.writeFile(wb, `Incidencias_${slug(obraData.nombre)}_${new Date().toISOString().slice(0,10)}.xlsx`);
+  toast("Excel de incidencias generado");
+}
+
+/* ============================================================
+   ENTREGAS FIRMADAS POR EL CLIENTE
+   ============================================================ */
+function abrirExportarEntregadas(obraId, obraData, ventanas){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  const entregadas = ventanas.filter(v => v.entrega);
+  if(!entregadas.length){ toast("Todavía no hay ninguna ventana entregada y firmada en esta obra"); return; }
+  openModal(`
+    <h3>Exportar entregadas</h3>
+    <p class="muted" style="margin-bottom:14px;">${entregadas.length} ventana${entregadas.length===1?"":"s"} con firma de entrega del cliente.</p>
+    <div class="btn-row">
+      <button class="btn btn-secondary" id="btnExpEntPdf">🧾 Exportar PDF</button>
+      <button class="btn btn-secondary" id="btnExpEntXls">📊 Exportar Excel</button>
+    </div>
+  `);
+  document.getElementById("btnExpEntPdf").addEventListener("click", ()=>{ closeModal(); generarPdfEntregadas(obraData, entregadas); });
+  document.getElementById("btnExpEntXls").addEventListener("click", ()=>{ closeModal(); generarExcelEntregadas(obraData, entregadas); });
+}
+
+async function generarPdfEntregadas(obraData, ventanas){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  if(!ventanas.length){ toast("No hay ventanas entregadas"); return; }
+  toast("Generando PDF de entregas…");
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const margen = 15, anchoUtil = 210 - margen*2;
+  let y = margen;
+
+  doc.setFontSize(16); doc.setTextColor(20);
+  doc.text(`Ventanas entregadas — ${obraData.nombre||""}`, margen, y); y += 6;
+  doc.setFontSize(10); doc.setTextColor(120);
+  doc.text(`${obraData.direccion||""}`, margen, y); y += 5;
+  doc.text(`Generado: ${new Date().toLocaleString("es-ES")}`, margen, y); y += 10;
+  doc.setFontSize(11); doc.setTextColor(20);
+  doc.text(`${ventanas.length} ventana${ventanas.length===1?"":"s"} entregada${ventanas.length===1?"":"s"} y firmada${ventanas.length===1?"":"s"}`, margen, y);
+  y += 8;
+  doc.setDrawColor(200); doc.line(margen, y, 210-margen, y); y += 8;
+
+  for(const v of ordenarVentanas(ventanas)){
+    if(y > 250){ doc.addPage(); y = margen; }
+    const detalle = [v.casa && `Casa ${v.casa}`, v.planta && `Planta ${v.planta}`, v.referencia].filter(Boolean).join(" · ");
+    doc.setFontSize(12); doc.setTextColor(20);
+    doc.text(`${etiquetaCorta(v)}${detalle ? " ("+detalle+")" : ""}`, margen, y); y += 6;
+    doc.setFontSize(10); doc.setTextColor(90);
+    doc.text(`Firmado por ${v.entrega.firmante||"—"} · ${fechaCorta(v.entrega.fecha)}`, margen + 4, y); y += 6;
+
+    if(v.entrega.firmaUrl){
+      const dataUrl = await urlADataUrl(v.entrega.firmaUrl);
+      if(dataUrl){
+        if(y > 235){ doc.addPage(); y = margen; }
+        try{
+          const formato = formatoImagenDataUrl(dataUrl);
+          const props = doc.getImageProperties(dataUrl);
+          const maxW = 60, maxH = 32;
+          let w = maxW, h = (props.height/props.width)*w;
+          if(h > maxH){ h = maxH; w = (props.width/props.height)*h; }
+          doc.setDrawColor(220); doc.rect(margen + 4, y, w, h);
+          doc.addImage(dataUrl, formato, margen + 4, y, w, h);
+          y += h + 4;
+        }catch(e){ /* firma no decodificable: se omite sin romper el informe */ }
+      }
+    }
+    y += 4;
+    doc.setDrawColor(230); doc.line(margen, y-2, 210-margen, y-2);
+  }
+
+  doc.save(`Entregadas_${slug(obraData.nombre)}_${new Date().toISOString().slice(0,10)}.pdf`);
+  toast("PDF de entregas generado");
+}
+
+function generarExcelEntregadas(obraData, ventanas){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  if(!ventanas.length){ toast("No hay ventanas entregadas"); return; }
+  const filas = ordenarVentanas(ventanas).map(v=>({
+    Casa: v.casa || "", Planta: v.planta || "", Ventana: etiquetaCorta(v), Referencia: v.referencia || "",
+    "Firmado por": v.entrega.firmante || "", "Fecha de entrega": fechaCorta(v.entrega.fecha),
+    "Registrado por": v.entrega.autor || "", Firma: v.entrega.firmaUrl || ""
+  }));
+  const ws = XLSX.utils.json_to_sheet(filas);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Entregadas");
+  XLSX.writeFile(wb, `Entregadas_${slug(obraData.nombre)}_${new Date().toISOString().slice(0,10)}.xlsx`);
+  toast("Excel de entregas generado");
+}
+
+/* ============================================================
+   INFORME DE INSTALACIÓN POR PERIODO (día / semana / mes / rango)
+   ============================================================ */
+// Calcula el rango [ini, fin) según el periodo elegido. "fin" es exclusivo para poder comparar
+// directamente con las fechas ISO guardadas en los eventos (ev.fecha < fin.toISOString()).
+function calcularRangoInforme(periodo, desde, hasta){
+  const ahora = new Date();
+  const inicioDia = (d)=> new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  if(periodo === "hoy"){
+    const ini = inicioDia(ahora);
+    const fin = new Date(ini); fin.setDate(fin.getDate()+1);
+    return { ini, fin, label: `Hoy (${ini.toLocaleDateString("es-ES")})` };
+  }
+  if(periodo === "semana"){
+    const diaSemana = (ahora.getDay()+6)%7; // lunes=0 ... domingo=6
+    const ini = inicioDia(ahora); ini.setDate(ini.getDate()-diaSemana);
+    const fin = new Date(ini); fin.setDate(fin.getDate()+7);
+    const finLabel = new Date(fin.getTime()-1);
+    return { ini, fin, label: `Semana del ${ini.toLocaleDateString("es-ES")} al ${finLabel.toLocaleDateString("es-ES")}` };
+  }
+  if(periodo === "mes"){
+    const ini = new Date(ahora.getFullYear(), ahora.getMonth(), 1);
+    const fin = new Date(ahora.getFullYear(), ahora.getMonth()+1, 1);
+    return { ini, fin, label: ini.toLocaleDateString("es-ES", {month:"long", year:"numeric"}) };
+  }
+  // Rango personalizado: si falta una fecha, se deja abierta por ese lado.
+  const ini = desde ? inicioDia(new Date(desde+"T00:00:00")) : new Date(0);
+  const finBase = hasta ? inicioDia(new Date(hasta+"T00:00:00")) : inicioDia(ahora);
+  const fin = new Date(finBase); fin.setDate(fin.getDate()+1);
+  const finLabel = new Date(fin.getTime()-1);
+  return { ini, fin, label: `Del ${ini.toLocaleDateString("es-ES")} al ${finLabel.toLocaleDateString("es-ES")}` };
+}
+
+// Clave de agrupación por día en hora local ("YYYY-MM-DD"), para no depender de la hora UTC
+// en la que se guardó el evento.
+function claveDia(iso){
+  return new Date(iso).toLocaleDateString("sv-SE");
+}
+
+function abrirInformeInstalacion(ctx){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  openModal(`
+    <h3>Informe de instalación</h3>
+    <p class="muted" style="margin-bottom:14px;">
+      Ventanas marcadas como <b>Instalada</b> en el periodo elegido${ctx.tipo==="obra" ? "" : ", en todas las obras"}.
+    </p>
+    <label class="field"><span>Periodo</span>
+      <select id="selPeriodoInforme">
+        <option value="hoy">Hoy</option>
+        <option value="semana">Esta semana</option>
+        <option value="mes" selected>Este mes</option>
+        <option value="rango">Rango de fechas…</option>
+      </select>
+    </label>
+    <div id="rangoFechasInforme" style="display:none;">
+      <div class="btn-row">
+        <label class="field"><span>Desde</span><input type="date" id="inpDesdeInforme" /></label>
+        <label class="field"><span>Hasta</span><input type="date" id="inpHastaInforme" /></label>
+      </div>
+    </div>
+    <div class="btn-row" style="margin-top:10px;">
+      <button class="btn btn-secondary" id="btnInformePdf">🧾 Exportar PDF</button>
+      <button class="btn btn-secondary" id="btnInformeXls">📊 Exportar Excel</button>
+    </div>
+  `);
+  const selPeriodo = document.getElementById("selPeriodoInforme");
+  selPeriodo.addEventListener("change", ()=>{
+    document.getElementById("rangoFechasInforme").style.display = selPeriodo.value === "rango" ? "block" : "none";
+  });
+
+  async function generar(formato){
+    const periodo = selPeriodo.value;
+    const desde = document.getElementById("inpDesdeInforme").value;
+    const hasta = document.getElementById("inpHastaInforme").value;
+    if(periodo === "rango" && !desde && !hasta){ toast("Indica al menos una fecha"); return; }
+    closeModal();
+    toast("Generando informe…");
+    try{
+      const eventos = ctx.tipo === "obra"
+        ? (await db.collection("eventos").where("obraId","==",ctx.obraId).get()).docs.map(d=>d.data())
+        : (await db.collection("eventos").orderBy("fecha","desc").limit(3000).get()).docs.map(d=>d.data());
+      const { ini, fin, label } = calcularRangoInforme(periodo, desde, hasta);
+      const iniIso = ini.toISOString(), finIso = fin.toISOString();
+      const filtrados = eventos.filter(ev => ev.tipo === "etapa" && ev.activar && ev.etapa === "instalada" && ev.fecha >= iniIso && ev.fecha < finIso);
+      const ventanasPorId = ctx.tipo === "obra" ? new Map(ctx.ventanas.map(v=>[v.id, v])) : null;
+      const tituloAmbito = ctx.tipo === "obra" ? (ctx.obraNombre || "Obra") : "Todas las obras";
+      if(formato === "pdf") generarPdfInformeInstalacion(tituloAmbito, label, filtrados, ventanasPorId);
+      else generarExcelInformeInstalacion(tituloAmbito, label, filtrados, ventanasPorId);
+    }catch(err){ toast("Error: " + err.message); }
+  }
+  document.getElementById("btnInformePdf").addEventListener("click", ()=> generar("pdf"));
+  document.getElementById("btnInformeXls").addEventListener("click", ()=> generar("xls"));
+}
+
+function generarPdfInformeInstalacion(tituloAmbito, periodoLabel, eventos, ventanasPorId){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  if(!eventos.length){ toast("No hay ventanas instaladas en ese periodo"); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const margen = 15;
+  let y = margen;
+
+  doc.setFontSize(16); doc.setTextColor(20);
+  doc.text(`Informe de instalación — ${tituloAmbito}`, margen, y); y += 6;
+  doc.setFontSize(10); doc.setTextColor(120);
+  doc.text(periodoLabel, margen, y); y += 5;
+  doc.text(`Generado: ${new Date().toLocaleString("es-ES")}`, margen, y); y += 10;
+  doc.setFontSize(11); doc.setTextColor(20);
+  doc.text(`${eventos.length} ventana${eventos.length===1?"":"s"} instalada${eventos.length===1?"":"s"} en el periodo`, margen, y);
+  y += 8;
+  doc.setDrawColor(200); doc.line(margen, y, 210-margen, y); y += 8;
+
+  const ordenados = [...eventos].sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
+  const porDia = new Map();
+  ordenados.forEach(ev=>{
+    const clave = claveDia(ev.fecha);
+    if(!porDia.has(clave)) porDia.set(clave, []);
+    porDia.get(clave).push(ev);
+  });
+
+  for(const [, lista] of porDia){
+    if(y > 265){ doc.addPage(); y = margen; }
+    doc.setFontSize(12.5); doc.setTextColor(20);
+    const fechaLegible = new Date(lista[0].fecha).toLocaleDateString("es-ES", { weekday:"long", day:"2-digit", month:"2-digit", year:"numeric" });
+    doc.text(`${fechaLegible}  —  ${lista.length} ventana${lista.length===1?"":"s"}`, margen, y); y += 6;
+    doc.setDrawColor(225); doc.line(margen, y-3.5, 210-margen, y-3.5);
+    for(const ev of lista){
+      if(y > 280){ doc.addPage(); y = margen; }
+      const v = ventanasPorId ? ventanasPorId.get(ev.ventanaId) : null;
+      const detalle = [v && v.casa && `Casa ${v.casa}`, v && v.planta && `Planta ${v.planta}`].filter(Boolean).join(" · ");
+      const obraTxt = ventanasPorId ? "" : `${ev.obraNombre||""} — `;
+      doc.setFontSize(10); doc.setTextColor(40);
+      doc.text(`${obraTxt}${ev.ventanaEtiqueta||""}${detalle ? " ("+detalle+")" : ""}  —  ${ev.nombre||"—"}`, margen+4, y);
+      y += 5.5;
+    }
+    y += 3;
+  }
+  doc.save(`Informe_instalacion_${slug(tituloAmbito)}_${new Date().toISOString().slice(0,10)}.pdf`);
+  toast("PDF de instalación generado");
+}
+
+function generarExcelInformeInstalacion(tituloAmbito, periodoLabel, eventos, ventanasPorId){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  if(!eventos.length){ toast("No hay ventanas instaladas en ese periodo"); return; }
+  const ordenados = [...eventos].sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
+  const filas = ordenados.map(ev=>{
+    const v = ventanasPorId ? ventanasPorId.get(ev.ventanaId) : null;
+    return {
+      Fecha: fechaCorta(ev.fecha),
+      ...(ventanasPorId ? {} : { Obra: ev.obraNombre || "" }),
+      Casa: (v && v.casa) || "", Planta: (v && v.planta) || "",
+      Ventana: ev.ventanaEtiqueta || "", Instalador: ev.nombre || ""
+    };
+  });
+  const ws = XLSX.utils.json_to_sheet(filas);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Instalación");
+  XLSX.writeFile(wb, `Informe_instalacion_${slug(tituloAmbito)}_${new Date().toISOString().slice(0,10)}.xlsx`);
+  toast("Excel de instalación generado");
 }
 
 function generarExcelCompleto(obraData, ventanas){
