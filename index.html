@@ -1124,7 +1124,7 @@ function renderObraDetalle(obraId, tabInicial){
     document.getElementById("btnExportIncidencias").addEventListener("click", ()=> abrirExportarIncidencias(obraId, obraData, ventanasVisibles));
     document.getElementById("btnExportEntregadas").addEventListener("click", ()=> abrirExportarEntregadas(obraId, obraData, ventanasVisibles));
     document.getElementById("btnInformeObra").addEventListener("click", ()=> abrirInformeInstalacion({ tipo: "obra", obraId, obraNombre: obraData.nombre, ventanas: ventanasVisibles }));
-    document.getElementById("btnEliminarObra").addEventListener("click", ()=> eliminarObra(obraId, obraData));
+    document.getElementById("btnEliminarObra").addEventListener("click", ()=> abrirConfirmarEliminarObra(obraId, obraData));
     document.getElementById("btnRecalcular").addEventListener("click", async ()=>{
       toast("Recalculando…");
       await recalcularProgresoObra(obraId, ventanas);
@@ -1508,9 +1508,33 @@ function abrirImportarExcel(obraId, numeroInicial){
   });
 }
 
+function abrirConfirmarEliminarObra(obraId, obraData){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  openModal(`
+    <h3 style="color:var(--rojo);">⚠️ Eliminar obra</h3>
+    <p class="muted" style="margin-bottom:14px;">
+      Vas a eliminar la obra "<b style="color:var(--gris-800);">${esc(obraData.nombre)}</b>". Se borrarán todas
+      sus ventanas, fotos, notas y documentos (planos y parte de fabricación). Esta acción no se puede deshacer.
+    </p>
+    <label class="field"><span>Introduce el código de la oficina para confirmar</span>
+      <input type="password" inputmode="numeric" id="inpPinEliminarObra" placeholder="Código de la oficina" autocomplete="off" />
+    </label>
+    <div class="btn-row" style="margin-top:14px;">
+      <button class="btn btn-outline" id="btnCancelarEliminarObra">Cancelar</button>
+      <button class="btn btn-primary" id="btnConfirmarEliminarObra" style="background:var(--rojo);border-color:var(--rojo);">Eliminar definitivamente</button>
+    </div>
+  `);
+  document.getElementById("btnCancelarEliminarObra").addEventListener("click", closeModal);
+  document.getElementById("btnConfirmarEliminarObra").addEventListener("click", ()=>{
+    const pin = (document.getElementById("inpPinEliminarObra").value || "").trim();
+    if(pin !== ADMIN_PIN){ toast("Código incorrecto: la obra no se ha eliminado"); return; }
+    closeModal();
+    eliminarObra(obraId, obraData);
+  });
+}
+
 async function eliminarObra(obraId, obraData){
   if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
-  if(!confirmar(`¿Eliminar la obra "${obraData.nombre}"? Se borrarán todas sus ventanas, fotos, notas y documentos (planos y parte de fabricación). Esta acción no se puede deshacer.`)) return;
   toast("Eliminando obra…");
   try{
     const obraRef = db.collection("obras").doc(obraId);
@@ -1542,6 +1566,33 @@ async function eliminarObra(obraId, obraData){
   }catch(err){ toast("Error eliminando: " + err.message); }
 }
 
+async function eliminarVentana(obraId, ventanaId, v){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  const obraRef = db.collection("obras").doc(obraId);
+  let aliasSnap;
+  try{
+    aliasSnap = await obraRef.collection("ventanas").where("aliasTo","==",ventanaId).get();
+  }catch(e){ aliasSnap = { docs: [] }; }
+  const nAlias = aliasSnap.docs.length;
+  const aviso = nAlias
+    ? `¿Eliminar la ventana ${etiquetaCorta(v)}? También se eliminarán ${nAlias} código${nAlias===1?"":"s"} QR que habían quedado vinculados a ella. Se perderá todo su avance, fotos, notas, incidencias y entrega firmada. Esta acción no se puede deshacer.`
+    : `¿Eliminar la ventana ${etiquetaCorta(v)}? Se perderá todo su avance, fotos, notas, incidencias y entrega firmada. Esta acción no se puede deshacer.`;
+  if(!confirmar(aviso)) return;
+  toast("Eliminando ventana…");
+  try{
+    const batch = db.batch();
+    batch.delete(obraRef.collection("ventanas").doc(ventanaId));
+    aliasSnap.docs.forEach(d=> batch.delete(d.ref));
+    await batch.commit();
+    try{
+      const snap = await obraRef.collection("ventanas").get();
+      await recalcularProgresoObra(obraId, snap.docs.map(d=>({id:d.id, ...d.data()})));
+    }catch(e){ /* no crítico */ }
+    toast("Ventana eliminada");
+    navegar(`#/obra/${obraId}`);
+  }catch(err){ toast("Error eliminando: " + err.message); }
+}
+
 /* ============================================================
    PANTALLA: DETALLE DE VENTANA
    ============================================================ */
@@ -1568,7 +1619,10 @@ function renderVentana(obraId, ventanaId){
       <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
           <h2 style="font-size:19px;">Ventana ${esc(etiquetaCorta(v))}</h2>
-          <button class="link-btn" id="btnEditarAsignacion" style="white-space:nowrap;">✏️ Editar</button>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end;">
+            <button class="link-btn" id="btnEditarAsignacion" style="white-space:nowrap;">✏️ Editar</button>
+            ${esAdmin() ? `<button class="link-btn" id="btnEliminarVentana" style="white-space:nowrap;color:var(--rojo);">🗑️ Eliminar</button>` : ""}
+          </div>
         </div>
         ${descripcionVentana(v) ? `<p class="muted" style="margin-top:2px;">${esc(descripcionVentana(v))}</p>` : ""}
         <p class="muted" style="margin-top:6px;">Marca cada etapa según avance la instalación</p>
@@ -1664,6 +1718,8 @@ function renderVentana(obraId, ventanaId){
     document.getElementById("btnVolverObra").addEventListener("click", ()=> navegar(`#/obra/${obraId}`));
     document.getElementById("btnVerFabricacion").addEventListener("click", ()=> navegar(`#/obra/${obraId}/planos`));
     document.getElementById("btnEditarAsignacion").addEventListener("click", ()=> abrirEditarAsignacion(obraId, ventanaId, vRef, v));
+    const btnEliminarVentana = document.getElementById("btnEliminarVentana");
+    if(btnEliminarVentana) btnEliminarVentana.addEventListener("click", ()=> eliminarVentana(obraId, ventanaId, v));
     document.getElementById("btnAddNota").addEventListener("click", ()=> addNota(vRef));
     document.getElementById("btnFoto").addEventListener("click", ()=> document.getElementById("inpFoto").click());
     document.getElementById("inpFoto").addEventListener("change", (e)=> subirFotos(obraId, ventanaId, vRef, e.target.files));
@@ -1763,10 +1819,13 @@ function renderVentana(obraId, ventanaId){
         </p>
         ${formularioAsignacionHtml()}
         <button class="btn btn-primary btn-block" id="btnGuardarAsignacion" style="margin-top:14px;">Asignar y continuar</button>
+        ${esAdmin() ? `<button class="link-btn" id="btnEliminarVentana" style="margin-top:12px;color:var(--rojo);">🗑️ Eliminar este código</button>` : ""}
       </div>
     `;
     document.getElementById("btnVolverObra").addEventListener("click", ()=> navegar(`#/obra/${obraId}`));
     document.getElementById("btnGuardarAsignacion").addEventListener("click", ()=> guardarAsignacion(obraId, ventanaId, vRef, true, v));
+    const btnEliminarVentana = document.getElementById("btnEliminarVentana");
+    if(btnEliminarVentana) btnEliminarVentana.addEventListener("click", ()=> eliminarVentana(obraId, ventanaId, v));
   }
 
   obraRef.get().then(d=>{
@@ -3014,7 +3073,8 @@ function abrirInformeInstalacion(ctx){
   openModal(`
     <h3>Informe de instalación</h3>
     <p class="muted" style="margin-bottom:14px;">
-      Ventanas marcadas como <b>Instalada</b> en el periodo elegido${ctx.tipo==="obra" ? "" : ", en todas las obras"}.
+      Todo lo que ha hecho cada instalador con cada ventana en el periodo elegido${ctx.tipo==="obra" ? "" : ", en todas las obras"}:
+      cada etapa marcada o desmarcada, paso a paso, con el día y la hora exactos.
     </p>
     <label class="field"><span>Periodo</span>
       <select id="selPeriodoInforme">
@@ -3053,7 +3113,7 @@ function abrirInformeInstalacion(ctx){
         : (await db.collection("eventos").orderBy("fecha","desc").limit(3000).get()).docs.map(d=>d.data());
       const { ini, fin, label } = calcularRangoInforme(periodo, desde, hasta);
       const iniIso = ini.toISOString(), finIso = fin.toISOString();
-      const filtrados = eventos.filter(ev => ev.tipo === "etapa" && ev.activar && ev.etapa === "instalada" && ev.fecha >= iniIso && ev.fecha < finIso);
+      const filtrados = eventos.filter(ev => ev.tipo === "etapa" && ETAPAS.includes(ev.etapa) && ev.fecha >= iniIso && ev.fecha < finIso);
       const ventanasPorId = ctx.tipo === "obra" ? new Map(ctx.ventanas.map(v=>[v.id, v])) : null;
       const tituloAmbito = ctx.tipo === "obra" ? (ctx.obraNombre || "Obra") : "Todas las obras";
       if(formato === "pdf") generarPdfInformeInstalacion(tituloAmbito, label, filtrados, ventanasPorId);
@@ -3066,7 +3126,7 @@ function abrirInformeInstalacion(ctx){
 
 function generarPdfInformeInstalacion(tituloAmbito, periodoLabel, eventos, ventanasPorId){
   if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
-  if(!eventos.length){ toast("No hay ventanas instaladas en ese periodo"); return; }
+  if(!eventos.length){ toast("No hay actividad registrada en ese periodo"); return; }
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit: "mm", format: "a4" });
   const margen = 15;
@@ -3078,7 +3138,7 @@ function generarPdfInformeInstalacion(tituloAmbito, periodoLabel, eventos, venta
   doc.text(periodoLabel, margen, y); y += 5;
   doc.text(`Generado: ${new Date().toLocaleString("es-ES")}`, margen, y); y += 10;
   doc.setFontSize(11); doc.setTextColor(20);
-  doc.text(`${eventos.length} ventana${eventos.length===1?"":"s"} instalada${eventos.length===1?"":"s"} en el periodo`, margen, y);
+  doc.text(`${eventos.length} paso${eventos.length===1?"":"s"} registrado${eventos.length===1?"":"s"} en el periodo`, margen, y);
   y += 8;
   doc.setDrawColor(200); doc.line(margen, y, 210-margen, y); y += 8;
 
@@ -3094,15 +3154,18 @@ function generarPdfInformeInstalacion(tituloAmbito, periodoLabel, eventos, venta
     if(y > 265){ doc.addPage(); y = margen; }
     doc.setFontSize(12.5); doc.setTextColor(20);
     const fechaLegible = new Date(lista[0].fecha).toLocaleDateString("es-ES", { weekday:"long", day:"2-digit", month:"2-digit", year:"numeric" });
-    doc.text(`${fechaLegible}  —  ${lista.length} ventana${lista.length===1?"":"s"}`, margen, y); y += 6;
+    doc.text(`${fechaLegible}  —  ${lista.length} paso${lista.length===1?"":"s"}`, margen, y); y += 6;
     doc.setDrawColor(225); doc.line(margen, y-3.5, 210-margen, y-3.5);
     for(const ev of lista){
       if(y > 280){ doc.addPage(); y = margen; }
       const v = ventanasPorId ? ventanasPorId.get(ev.ventanaId) : null;
       const detalle = [v && v.casa && `Casa ${v.casa}`, v && v.planta && `Planta ${v.planta}`].filter(Boolean).join(" · ");
       const obraTxt = ventanasPorId ? "" : `${ev.obraNombre||""} — `;
+      const hora = new Date(ev.fecha).toLocaleTimeString("es-ES", { hour:"2-digit", minute:"2-digit" });
+      const etapaTxt = `${ETAPA_ICONO[ev.etapa]||""} ${ETAPA_LABEL[ev.etapa]||ev.etapa}`;
+      const accion = ev.activar ? "Marcada" : "Desmarcada";
       doc.setFontSize(10); doc.setTextColor(40);
-      doc.text(`${obraTxt}${ev.ventanaEtiqueta||""}${detalle ? " ("+detalle+")" : ""}  —  ${ev.nombre||"—"}`, margen+4, y);
+      doc.text(`${hora}  —  ${obraTxt}${ev.ventanaEtiqueta||""}${detalle ? " ("+detalle+")" : ""}  —  ${etapaTxt}: ${accion}  —  ${ev.nombre||"—"}`, margen+4, y);
       y += 5.5;
     }
     y += 3;
@@ -3113,15 +3176,20 @@ function generarPdfInformeInstalacion(tituloAmbito, periodoLabel, eventos, venta
 
 function generarExcelInformeInstalacion(tituloAmbito, periodoLabel, eventos, ventanasPorId){
   if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
-  if(!eventos.length){ toast("No hay ventanas instaladas en ese periodo"); return; }
+  if(!eventos.length){ toast("No hay actividad registrada en ese periodo"); return; }
   const ordenados = [...eventos].sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
   const filas = ordenados.map(ev=>{
     const v = ventanasPorId ? ventanasPorId.get(ev.ventanaId) : null;
+    const f = new Date(ev.fecha);
     return {
-      Fecha: fechaCorta(ev.fecha),
+      Fecha: f.toLocaleDateString("es-ES"),
+      Hora: f.toLocaleTimeString("es-ES", { hour:"2-digit", minute:"2-digit" }),
       ...(ventanasPorId ? {} : { Obra: ev.obraNombre || "" }),
       Casa: (v && v.casa) || "", Planta: (v && v.planta) || "",
-      Ventana: ev.ventanaEtiqueta || "", Instalador: ev.nombre || ""
+      Ventana: ev.ventanaEtiqueta || "",
+      Etapa: ETAPA_LABEL[ev.etapa] || ev.etapa || "",
+      Acción: ev.activar ? "Marcada" : "Desmarcada",
+      Instalador: ev.nombre || ""
     };
   });
   const ws = XLSX.utils.json_to_sheet(filas);
