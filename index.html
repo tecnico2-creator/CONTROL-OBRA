@@ -146,6 +146,28 @@
   .vchip .badges span{font-size:9px;}
   .vchip .vchip-check{position:absolute;top:5px;left:5px;width:16px;height:16px;}
   .vchip.vchip-sel{outline:2.5px solid var(--primario);background:#eef2ff;}
+  .mapa-wrap{position:relative;overflow:hidden;background:var(--gris-100);touch-action:manipulation;line-height:0;}
+  .mapa-wrap.editando{cursor:crosshair;}
+  .mapa-wrap img{width:100%;display:block;user-select:none;-webkit-user-select:none;}
+  .mapa-marker{
+    position:absolute;transform:translate(-50%,-50%);display:flex;flex-direction:column;
+    align-items:center;gap:2px;cursor:pointer;
+  }
+  .mapa-marker::before{
+    content:"";display:block;width:16px;height:16px;border-radius:50%;background:var(--gris-400);
+    border:2.5px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4);
+  }
+  .mapa-marker.mm-instalada::before{background:var(--amarillo);}
+  .mapa-marker.mm-sellada::before{background:var(--naranja);}
+  .mapa-marker.mm-acristalada::before{background:var(--indigo);}
+  .mapa-marker.mm-composite::before{background:var(--teal);}
+  .mapa-marker.mm-terminada::before{background:var(--verde);}
+  .mapa-marker.mm-vacia::before{background:#fff;border-style:dashed;border-color:var(--gris-400);}
+  .mapa-marker .mm-label{
+    font-size:9.5px;font-weight:700;color:#fff;background:rgba(0,0,0,.6);padding:1px 5px;
+    border-radius:6px;white-space:nowrap;
+  }
+  .mapa-marker .mm-alerta{position:absolute;top:-12px;font-size:11px;}
   .etapa-row{
     display:flex;align-items:center;gap:12px;padding:14px;border-radius:12px;
     background:var(--gris-100);margin-bottom:10px;
@@ -345,6 +367,20 @@ function pasosCompletados(estado){
   return ETAPAS.reduce((n,e)=> n + (estado[e] ? 1 : 0), 0);
 }
 
+// Estado de una casa completa para pintar su marca en el mapa de la promoción: la etapa "común" es
+// la más avanzada que TODAS sus ventanas han alcanzado ya (el cuello de botella), aprovechando que
+// las etapas se marcan en cascada (si una ventana está en "sellada" también está en "instalada").
+function estadoCasaParaMapa(casa, ventanas){
+  const de = ventanas.filter(v => (v.casa||"") === casa);
+  if(!de.length) return { etapa: null, sinVentanas: true, incidenciaAbierta: false, pct: 0 };
+  let etapaComun = null;
+  for(const e of ETAPAS){ if(de.every(v => v.estado && v.estado[e])) etapaComun = e; else break; }
+  const incidenciaAbierta = de.some(v => (v.incidencias||[]).some(i=>!i.resuelta));
+  const checks = de.reduce((n,v)=> n + pasosCompletados(v.estado), 0);
+  const pct = Math.round((checks/(de.length*ETAPAS.length))*100);
+  return { etapa: etapaComun, sinVentanas: false, incidenciaAbierta, pct };
+}
+
 // Una ventana tiene datos "avanzados" (casa/planta/referencia) cuando viene de una importación Excel/CSV
 function tieneDatosAvanzados(v){ return !!(v.casa || v.planta || v.referencia || v.numeroPlano); }
 
@@ -532,7 +568,7 @@ function route(){
   if(parts[0] === "nueva"){ if(!esAdmin()){ navegar("#/"); return; } setTopbar("Nueva obra","",true); renderNuevaObra(); }
   else if(parts[0] === "usuarios"){ if(!esAdmin()){ navegar("#/"); return; } setTopbar("Usuarios","Cuentas de tu equipo",true); renderUsuarios(); }
   else if(parts[0] === "estadisticas"){ if(!esAdmin()){ navegar("#/"); return; } setTopbar("Estadísticas","Actividad por instalador",true); renderEstadisticas(); }
-  else if(parts[0] === "obra" && parts[1]){ renderObraDetalle(parts[1], parts[2]); }
+  else if(parts[0] === "obra" && parts[1]){ renderObraDetalle(parts[1], parts[2], parts[3] ? decodeURIComponent(parts[3]) : null); }
   else if(parts[0] === "ventana" && parts[1] && parts[2]){ renderVentana(parts[1], parts[2]); }
   else if(parts[0] === "scan"){ setTopbar("Escanear QR","",true); renderScanner(); }
   else { setTopbar(NOMBRE_APP,"Control de instalación",false); renderListaObras(); }
@@ -1005,10 +1041,10 @@ async function recalcularProgresoObra(obraId, ventanas){
 /* ============================================================
    PANTALLA: DETALLE DE OBRA
    ============================================================ */
-function renderObraDetalle(obraId, tabInicial){
+function renderObraDetalle(obraId, tabInicial, casaInicial){
   const admin = esAdmin();
-  const TABS_ADMIN = ["ventanas","fotos","planos","stats"];
-  const TABS_INSTALADOR = ["ventanas","planos"];
+  const TABS_ADMIN = ["ventanas","mapa","fotos","planos","stats"];
+  const TABS_INSTALADOR = ["ventanas","mapa","planos"];
   const permitidas = admin ? TABS_ADMIN : TABS_INSTALADOR;
   let tab = permitidas.includes(tabInicial) ? tabInicial : "ventanas";
   let recalculando = false; // evita relanzar el auto-recálculo varias veces mientras llega la respuesta
@@ -1021,9 +1057,10 @@ function renderObraDetalle(obraId, tabInicial){
   let ventanas = [];
   let planos = [];
   let filtroReferencia = "";
-  let filtroTexto = ""; // buscador de ventana por código/número o por casa
+  let filtroTexto = casaInicial || ""; // buscador de ventana por código/número o por casa (o casa venida del mapa)
   let seleccionVarios = false; // modo "seleccionar varias" en el grupo "Sin casa asignada"
   let idsSeleccionVarios = new Set();
+  let modoEdicionMapa = false; // solo admin: añadir/editar marcas en el plano de la promoción
 
   function pintar(){
     if(!obraData){ return; }
@@ -1037,6 +1074,7 @@ function renderObraDetalle(obraId, tabInicial){
     const tabsHtml = `
       <div class="tabs">
         <button data-tab="ventanas" class="${tab==="ventanas"?"active":""}">Ventanas</button>
+        <button data-tab="mapa" class="${tab==="mapa"?"active":""}">Mapa</button>
         ${admin ? `<button data-tab="fotos" class="${tab==="fotos"?"active":""}">Fotos y notas</button>` : ""}
         <button data-tab="planos" class="${tab==="planos"?"active":""}">Documentos</button>
         ${admin ? `<button data-tab="stats" class="${tab==="stats"?"active":""}">Estadísticas</button>` : ""}
@@ -1059,6 +1097,7 @@ function renderObraDetalle(obraId, tabInicial){
         b.addEventListener("click", ()=> navegar(`#/obra/${obraId}/${b.dataset.tab}`));
       });
       if(tab === "planos") pintarPlanos();
+      else if(tab === "mapa") pintarMapa(ventanasVisibles);
       else pintarVentanasGrid(obraId, ventanasVisibles);
       return;
     }
@@ -1153,6 +1192,7 @@ function renderObraDetalle(obraId, tabInicial){
 
     if(tab === "fotos") pintarFotosNotas(ventanasVisibles);
     else if(tab === "planos") pintarPlanos();
+    else if(tab === "mapa") pintarMapa(ventanasVisibles);
     else if(tab === "stats") pintarEstadisticasObra();
     else pintarVentanasGrid(obraId, ventanasVisibles);
   }
@@ -1399,6 +1439,99 @@ function renderObraDetalle(obraId, tabInicial){
         subirPlano(obraId, e.target.files, categoria, ambito, codigosVentana);
       });
       cont.querySelectorAll("[data-del]").forEach(b=> b.addEventListener("click", ()=> borrarPlano(obraId, b.dataset.del)));
+    }
+  }
+
+  function pintarMapa(ventanas){
+    const cont = document.getElementById("tabContent");
+    const mapaUrl = obraData.mapaUrl;
+    const marcadores = obraData.mapaMarcadores || [];
+
+    if(!mapaUrl){
+      cont.innerHTML = `
+        <div class="card">
+          <div class="empty">Todavía no hay un plano de esta promoción.</div>
+          ${admin ? `
+            <input type="file" id="inpMapa" accept="image/*" style="display:none;" />
+            <button class="btn btn-primary btn-block" id="btnSubirMapa" style="margin-top:10px;">📤 Subir plano de la promoción</button>
+            <p class="muted" style="margin-top:8px;">Sube una imagen del plano (foto o captura) y después podrás marcar sobre ella dónde está cada casa.</p>
+            ${!CLOUDINARY_OK ? `<p class="muted" style="margin-top:4px;">Falta configurar Cloudinary para poder subir el plano (ver README.md).</p>` : ""}
+          ` : `<div class="empty">La oficina todavía no ha subido el plano de esta obra.</div>`}
+        </div>
+      `;
+      if(admin){
+        document.getElementById("btnSubirMapa").addEventListener("click", ()=> document.getElementById("inpMapa").click());
+        document.getElementById("inpMapa").addEventListener("change", (e)=>{
+          if(e.target.files[0]) subirMapaObra(obraId, e.target.files[0]);
+        });
+      }
+      return;
+    }
+
+    const casasTotales = [...new Set(ventanas.map(v=>v.casa).filter(Boolean))].sort(compararNatural);
+    const casasSinMarcar = casasTotales.filter(c => !marcadores.some(m=>m.casa===c));
+
+    cont.innerHTML = `
+      <div class="card" style="padding:0;overflow:hidden;">
+        <div style="padding:12px 14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+          <span class="muted" style="font-size:12.5px;">${marcadores.length ? `${marcadores.length} casa(s) marcadas en el plano` : "Todavía no hay ninguna casa marcada"}</span>
+          ${admin ? `
+            <div style="display:flex;gap:14px;flex-wrap:wrap;">
+              <button class="link-btn" id="btnEditarMapa">${modoEdicionMapa ? "✅ Terminar edición" : "✏️ Editar marcas"}</button>
+              <button class="link-btn" id="btnCambiarMapa">🔄 Cambiar plano</button>
+            </div>
+          ` : ""}
+        </div>
+        ${admin && modoEdicionMapa ? `<p class="muted" style="padding:0 14px 10px;font-size:12.5px;">Toca sobre el plano para añadir una casa nueva. Toca una marca ya puesta para cambiarla de nombre o borrarla.</p>` : ""}
+        <div class="mapa-wrap ${admin && modoEdicionMapa ? "editando" : ""}" id="mapaWrap">
+          <img src="${esc(mapaUrl)}" id="mapaImg" draggable="false" />
+          ${marcadores.map(m=>{
+            const info = estadoCasaParaMapa(m.casa, ventanas);
+            const colorClass = info.sinVentanas ? "mm-vacia" : (info.etapa ? "mm-"+info.etapa : "");
+            return `
+            <div class="mapa-marker ${colorClass}" data-mid="${esc(m.id)}" data-casa="${esc(m.casa)}" style="left:${(m.x*100).toFixed(2)}%;top:${(m.y*100).toFixed(2)}%;">
+              ${info.incidenciaAbierta ? `<span class="mm-alerta">⚠️</span>` : ""}
+              <span class="mm-label">${esc(m.casa)}</span>
+            </div>`;
+          }).join("")}
+        </div>
+        ${admin ? `<input type="file" id="inpMapa2" accept="image/*" style="display:none;" />` : ""}
+      </div>
+      ${admin && casasSinMarcar.length ? `
+        <div class="card" style="margin-top:14px;">
+          <div class="section-title">Casas todavía sin marcar en el plano</div>
+          <p class="muted" style="font-size:12.5px;margin-top:4px;">${casasSinMarcar.map(esc).join(", ")}</p>
+        </div>
+      ` : ""}
+    `;
+
+    const wrap = document.getElementById("mapaWrap");
+    wrap.addEventListener("click", (e)=>{
+      const markerEl = e.target.closest(".mapa-marker");
+      if(!(admin && modoEdicionMapa)){
+        if(markerEl) navegar(`#/obra/${obraId}/ventanas/${encodeURIComponent(markerEl.dataset.casa)}`);
+        return;
+      }
+      if(markerEl){
+        abrirEditarMarcadorMapa(obraId, marcadores, markerEl.dataset.mid);
+        return;
+      }
+      const rect = document.getElementById("mapaImg").getBoundingClientRect();
+      const x = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+      const y = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height));
+      abrirNuevoMarcadorMapa(obraId, casasTotales, marcadores, x, y);
+    });
+
+    if(admin){
+      document.getElementById("btnEditarMapa").addEventListener("click", ()=>{
+        modoEdicionMapa = !modoEdicionMapa;
+        pintarMapa(ventanas);
+      });
+      const cambiar = ()=> document.getElementById("inpMapa2").click();
+      document.getElementById("btnCambiarMapa").addEventListener("click", cambiar);
+      document.getElementById("inpMapa2").addEventListener("change", (e)=>{
+        if(e.target.files[0]) subirMapaObra(obraId, e.target.files[0]);
+      });
     }
   }
 
@@ -2401,6 +2534,71 @@ async function borrarPlano(obraId, planoId){
   try{
     await db.collection("obras").doc(obraId).collection("planos").doc(planoId).delete();
   }catch(err){ toast("Error: " + err.message); }
+}
+
+/* ============================================================
+   MAPA DE LA PROMOCIÓN: imagen del plano + marcas de cada casa
+   ============================================================ */
+async function subirMapaObra(obraId, file){
+  if(!CLOUDINARY_OK){ toast("Falta configurar Cloudinary para poder subir el plano (ver README.md)"); return; }
+  toast("Subiendo plano…");
+  try{
+    const { url } = await subirArchivoCloudinary(file);
+    await db.collection("obras").doc(obraId).update({ mapaUrl: url });
+    toast("Plano subido");
+  }catch(err){ toast("Error subiendo el plano: " + err.message); }
+}
+
+async function guardarMarcadoresMapa(obraId, marcadores){
+  try{
+    await db.collection("obras").doc(obraId).update({ mapaMarcadores: marcadores });
+  }catch(err){ toast("Error guardando la marca: " + err.message); }
+}
+
+function nuevoIdMarcador(){
+  return "m" + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
+}
+
+function abrirNuevoMarcadorMapa(obraId, casasExistentes, marcadoresActuales, x, y){
+  openModal(`
+    <h3>Nueva marca en el plano</h3>
+    <label class="field"><span>¿Qué casa es?</span>
+      <input type="text" id="inpCasaMarcador" list="listaCasasMapa" placeholder="Ej: A201" autofocus />
+      <datalist id="listaCasasMapa">${casasExistentes.map(c=>`<option value="${esc(c)}"></option>`).join("")}</datalist>
+    </label>
+    <button class="btn btn-primary btn-block" id="btnGuardarMarcador">Guardar</button>
+  `);
+  document.getElementById("btnGuardarMarcador").addEventListener("click", async ()=>{
+    const casa = document.getElementById("inpCasaMarcador").value.trim();
+    if(!casa){ toast("Escribe la casa"); return; }
+    const marcadores = [...marcadoresActuales, { id: nuevoIdMarcador(), casa, x, y }];
+    closeModal();
+    await guardarMarcadoresMapa(obraId, marcadores);
+  });
+}
+
+function abrirEditarMarcadorMapa(obraId, marcadoresActuales, mid){
+  const m = marcadoresActuales.find(mm=>mm.id===mid);
+  if(!m) return;
+  openModal(`
+    <h3>Editar marca</h3>
+    <label class="field"><span>Casa</span><input type="text" id="inpCasaMarcadorEd" value="${esc(m.casa)}" autofocus /></label>
+    <button class="btn btn-primary btn-block" id="btnGuardarMarcadorEd">Guardar</button>
+    <button class="btn btn-secondary btn-block" id="btnBorrarMarcadorEd" style="margin-top:10px;color:var(--rojo);">🗑️ Eliminar marca</button>
+  `);
+  document.getElementById("btnGuardarMarcadorEd").addEventListener("click", async ()=>{
+    const casa = document.getElementById("inpCasaMarcadorEd").value.trim();
+    if(!casa){ toast("Escribe la casa"); return; }
+    const marcadores = marcadoresActuales.map(mm=> mm.id===mid ? {...mm, casa} : mm);
+    closeModal();
+    await guardarMarcadoresMapa(obraId, marcadores);
+  });
+  document.getElementById("btnBorrarMarcadorEd").addEventListener("click", async ()=>{
+    if(!confirmar("¿Quitar esta marca del plano?")) return;
+    const marcadores = marcadoresActuales.filter(mm=>mm.id!==mid);
+    closeModal();
+    await guardarMarcadoresMapa(obraId, marcadores);
+  });
 }
 
 /* ============================================================
