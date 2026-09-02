@@ -390,6 +390,15 @@ function normalizarCabecera(s){
   return String(s||"").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"").trim();
 }
 
+// Documentos de "parte de fabricación" (categoria:"fabricacion") cuyo campo `codigos` incluye el
+// número de plano o el código interno de esta ventana en concreto — así, desde la ficha de la
+// ventana, aparece directamente el documento que la menciona, sin tener que ir a buscarlo a mano.
+function documentosParaVentana(v, docsFabricacion){
+  const claves = [v.numeroPlano, v.etiqueta].map(normalizarCabecera).filter(Boolean);
+  if(!claves.length || !docsFabricacion || !docsFabricacion.length) return [];
+  return docsFabricacion.filter(p => (p.codigos||[]).some(c => claves.includes(normalizarCabecera(c))));
+}
+
 // Lista de plantas distintas presentes en una obra, ordenadas
 function plantasDisponibles(ventanas){
   return [...new Set(ventanas.map(v=>v.planta).filter(Boolean))].sort(compararPlanta);
@@ -1317,8 +1326,17 @@ function renderObraDetalle(obraId, tabInicial){
           </select>
         </label>
         <label class="field" id="campoAmbitoDoc" style="display:none;">
-          <span>¿Qué casas o ventanas cubre? (opcional)</span>
+          <span>¿Qué casas cubre? (opcional, solo descriptivo)</span>
           <input type="text" id="inpAmbitoDoc" placeholder="Ej: Casas A1 a A10, o Pedido 45" />
+        </label>
+        <label class="field" id="campoCodigosDoc" style="display:none;">
+          <span>Códigos de ventana que incluye (opcional)</span>
+          <textarea id="inpCodigosDoc" rows="2" placeholder="Ej: 1143, 1144, 1145 — los mismos números que usas en la obra"></textarea>
+          <span class="muted" style="font-size:12px;display:block;margin-top:4px;">
+            Escribe aquí los códigos/números de ventana que trae este documento (separados por
+            coma, espacio o uno por línea). Así, al entrar en cada una de esas ventanas, aparecerá
+            un acceso directo a este documento en concreto.
+          </span>
         </label>
         <input type="file" id="inpPlano" accept="image/*,.pdf" style="display:none;" />
         <button class="btn btn-primary btn-block" id="btnSubirPlano">📤 Subir documento</button>
@@ -1333,6 +1351,7 @@ function renderObraDetalle(obraId, tabInicial){
         <div class="feed-item">
           <div class="meta"><span><span class="who">${esc(p.nombre||"Documento")}</span></span><span>${fechaCorta(p.fecha)}</span></div>
           ${p.ambito ? `<p class="muted" style="margin:2px 0 6px;">${esc(p.ambito)}</p>` : ""}
+          ${(p.codigos&&p.codigos.length) ? `<p class="muted" style="margin:2px 0 6px;font-size:12.5px;">🔗 Ventanas: ${p.codigos.map(esc).join(", ")}</p>` : ""}
           <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
             ${p.tipo==="image"
               ? `<a href="${esc(p.url)}" target="_blank" rel="noopener"><img src="${esc(p.url)}" style="width:70px;height:70px;object-fit:cover;border-radius:8px;" loading="lazy" /></a>`
@@ -1362,12 +1381,18 @@ function renderObraDetalle(obraId, tabInicial){
     if(admin){
       const selTipo = document.getElementById("selTipoDoc");
       const campoAmbito = document.getElementById("campoAmbitoDoc");
-      selTipo.addEventListener("change", ()=>{ campoAmbito.style.display = selTipo.value === "fabricacion" ? "block" : "none"; });
+      const campoCodigos = document.getElementById("campoCodigosDoc");
+      selTipo.addEventListener("change", ()=>{
+        const esFab = selTipo.value === "fabricacion";
+        campoAmbito.style.display = esFab ? "block" : "none";
+        campoCodigos.style.display = esFab ? "block" : "none";
+      });
       document.getElementById("btnSubirPlano").addEventListener("click", ()=> document.getElementById("inpPlano").click());
       document.getElementById("inpPlano").addEventListener("change", (e)=>{
         const categoria = selTipo.value;
         const ambito = (document.getElementById("inpAmbitoDoc").value || "").trim();
-        subirPlano(obraId, e.target.files, categoria, ambito);
+        const codigosVentana = parseCodigosVentana(document.getElementById("inpCodigosDoc").value);
+        subirPlano(obraId, e.target.files, categoria, ambito, codigosVentana);
       });
       cont.querySelectorAll("[data-del]").forEach(b=> b.addEventListener("click", ()=> borrarPlano(obraId, b.dataset.del)));
     }
@@ -1666,6 +1691,7 @@ function renderVentana(obraId, ventanaId){
   let obraNombre = "";
   let ultimoV = null;
   let fotoIncidenciaLista = null; // foto elegida para la incidencia que se está redactando, hasta que se guarda
+  let documentosFabricacion = []; // partes de fabricación de la obra (se filtran por código más abajo)
 
   function pintar(v){
     ultimoV = v;
@@ -1696,6 +1722,21 @@ function renderVentana(obraId, ventanaId){
           `).join("")}
         </div>
       </div>
+
+      ${(()=>{
+        const docs = documentosParaVentana(v, documentosFabricacion);
+        if(!docs.length) return "";
+        return `
+        <div class="card">
+          <div class="section-title">📋 Parte de fabricación de esta ventana</div>
+          ${docs.map(p=>`
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px;">
+              <a href="${esc(p.url)}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm">📄 Ver / descargar</a>
+              <span class="muted">${esc(p.nombre||"Documento")}</span>
+            </div>
+          `).join("")}
+        </div>`;
+      })()}
 
       <div class="card">
         <div class="section-title">Anotaciones</div>
@@ -1903,6 +1944,12 @@ function renderVentana(obraId, ventanaId){
     pintar(data);
   }, err=> toast("Error: " + err.message));
   unsubscribers.push(unsub);
+
+  const unsubDocs = obraRef.collection("planos").where("categoria","==","fabricacion").onSnapshot(snap=>{
+    documentosFabricacion = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    if(ultimoV) pintar(ultimoV);
+  }, err=>{ /* si falla, simplemente no se muestra el acceso directo; no bloquea el resto de la ficha */ });
+  unsubscribers.push(unsubDocs);
 }
 
 // Campos compartidos por la asignación inicial (QR genérico) y la edición posterior de identificación.
@@ -2298,7 +2345,18 @@ function inicializarFirmaPad(canvas){
   };
 }
 
-async function subirPlano(obraId, files, categoria, ambito){
+// Los "códigos" se escriben libremente (separados por coma, espacio, punto y coma o salto de
+// línea) y se guardan tal cual para mostrarlos, pero la búsqueda/coincidencia con cada ventana se
+// hace siempre normalizando (mayúsculas/tildes/espacios) con normalizarCabecera, igual que el
+// buscador de ventanas — así "1143", "1143 " o "Nº1143" encuentran la misma ventana.
+function parseCodigosVentana(texto){
+  return (texto||"")
+    .split(/[,;\n]+|\s{1,}/)
+    .map(s=> s.trim())
+    .filter(Boolean);
+}
+
+async function subirPlano(obraId, files, categoria, ambito, codigosVentana){
   if(!files || !files.length) return;
   if(!CLOUDINARY_OK){
     toast("Falta configurar Cloudinary para poder subir documentos (ver README.md)");
@@ -2307,17 +2365,24 @@ async function subirPlano(obraId, files, categoria, ambito){
   }
   const subidoPor = nombreUsuario() || "—";
   const esFabricacion = categoria === "fabricacion";
+  codigosVentana = codigosVentana || [];
   toast(`Subiendo ${files.length} documento(s)…`);
   const obraRef = db.collection("obras").doc(obraId);
   for(const file of files){
     try{
-      const { url, publicId, resourceType } = await subirArchivoCloudinary(file);
+      const { url, publicId } = await subirArchivoCloudinary(file);
+      // OJO: Cloudinary clasifica los PDF también como resource_type "image" (para poder generar
+      // miniaturas de sus páginas), así que NO sirve para distinguir un PDF de una foto real — hay
+      // que mirar el propio archivo (nombre/tipo) o el resultado se intenta mostrar como <img> y
+      // sale roto. Miramos la extensión y el MIME type del archivo original.
+      const esPdf = /\.pdf$/i.test(file.name||"") || file.type === "application/pdf";
       await obraRef.collection("planos").add({
         nombre: file.name || (esFabricacion ? "Parte de fabricación" : "Plano"),
         url, publicId,
-        tipo: resourceType === "image" ? "image" : "pdf",
+        tipo: esPdf ? "pdf" : "image",
         categoria: esFabricacion ? "fabricacion" : "plano",
         ambito: esFabricacion ? (ambito || "") : "",
+        codigos: esFabricacion ? codigosVentana : [],
         subidoPor,
         fecha: new Date().toISOString()
       });
