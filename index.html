@@ -146,11 +146,12 @@
   .vchip .badges span{font-size:9px;}
   .vchip .vchip-check{position:absolute;top:5px;left:5px;width:16px;height:16px;}
   .vchip.vchip-sel{outline:2.5px solid var(--primario);background:#eef2ff;}
-  .mapa-wrap{position:relative;overflow:hidden;background:var(--gris-100);touch-action:manipulation;line-height:0;}
+  .mapa-wrap{position:relative;overflow:hidden;background:var(--gris-100);touch-action:none;line-height:0;}
   .mapa-wrap.editando{cursor:crosshair;}
-  .mapa-wrap img{width:100%;display:block;user-select:none;-webkit-user-select:none;}
+  .mapa-content{position:relative;transform-origin:0 0;width:100%;}
+  .mapa-content img{width:100%;display:block;user-select:none;-webkit-user-select:none;pointer-events:none;}
   .mapa-marker{
-    position:absolute;transform:translate(-50%,-50%);display:flex;flex-direction:column;
+    position:absolute;transform-origin:center;display:flex;flex-direction:column;
     align-items:center;gap:2px;cursor:pointer;
   }
   .mapa-marker::before{
@@ -164,10 +165,18 @@
   .mapa-marker.mm-terminada::before{background:var(--verde);}
   .mapa-marker.mm-vacia::before{background:#fff;border-style:dashed;border-color:var(--gris-400);}
   .mapa-marker .mm-label{
-    font-size:9.5px;font-weight:700;color:#fff;background:rgba(0,0,0,.6);padding:1px 5px;
-    border-radius:6px;white-space:nowrap;
+    font-size:9.5px;font-weight:700;color:#111827;background:#fff;padding:1px 5px;
+    border-radius:6px;white-space:nowrap;border:1px solid rgba(0,0,0,.25);box-shadow:0 1px 2px rgba(0,0,0,.25);
   }
   .mapa-marker .mm-alerta{position:absolute;top:-12px;font-size:11px;}
+  .mapa-zoom-controles{
+    position:absolute;right:10px;bottom:10px;display:flex;flex-direction:column;gap:6px;z-index:5;
+  }
+  .mapa-zoom-btn{
+    width:34px;height:34px;border-radius:50%;border:none;background:#fff;color:var(--gris-600);
+    font-size:18px;font-weight:700;box-shadow:0 1px 6px rgba(0,0,0,.35);cursor:pointer;
+    display:flex;align-items:center;justify-content:center;padding:0;line-height:1;
+  }
   .etapa-row{
     display:flex;align-items:center;gap:12px;padding:14px;border-radius:12px;
     background:var(--gris-100);margin-bottom:10px;
@@ -1094,6 +1103,7 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
   let idsSeleccionVarios = new Set();
   let modoEdicionMapa = false; // solo admin: añadir/editar marcas en el plano seleccionado
   let mapaSeleccionadoId = null; // qué plano se está viendo/editando ahora mismo
+  let mapaZoom = 1, mapaPanX = 0, mapaPanY = 0; // ampliación/desplazamiento del plano actual (se reinicia al cambiar de plano)
   let migracionMapaIntentada = false; // evita reintentar varias veces la migración del mapa antiguo (single-map)
 
   function pintar(){
@@ -1526,18 +1536,25 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
             </div>
           ` : ""}
         </div>
-        ${admin && modoEdicionMapa ? `<p class="muted" style="padding:0 14px 10px;font-size:12.5px;">Toca sobre el plano para añadir una casa nueva. Toca una marca ya puesta para cambiarla de nombre o borrarla.</p>` : ""}
+        ${admin && modoEdicionMapa ? `<p class="muted" style="padding:0 14px 10px;font-size:12.5px;">Toca sobre el plano para añadir una casa nueva. Toca una marca ya puesta para cambiarla de nombre o borrarla. Puedes ampliar el plano (pellizcando con dos dedos, o con los botones) para colocarlas con más precisión — las marcas no crecen al ampliar.</p>` : ""}
         <div class="mapa-wrap ${admin && modoEdicionMapa ? "editando" : ""}" id="mapaWrap">
-          <img src="${esc(mapaActual.url)}" id="mapaImg" draggable="false" />
-          ${marcadores.map(m=>{
-            const info = estadoCasaParaMapa(m.casa, ventanas);
-            const colorClass = info.sinVentanas ? "mm-vacia" : (info.etapa ? "mm-"+info.etapa : "");
-            return `
-            <div class="mapa-marker ${colorClass}" data-mid="${esc(m.id)}" data-casa="${esc(m.casa)}" style="left:${(m.x*100).toFixed(2)}%;top:${(m.y*100).toFixed(2)}%;">
-              ${info.incidenciaAbierta ? `<span class="mm-alerta">⚠️</span>` : ""}
-              <span class="mm-label">${esc(m.casa)}</span>
-            </div>`;
-          }).join("")}
+          <div class="mapa-content" id="mapaContent" style="transform:translate(${mapaPanX}px,${mapaPanY}px) scale(${mapaZoom});">
+            <img src="${esc(mapaActual.url)}" id="mapaImg" draggable="false" />
+            ${marcadores.map(m=>{
+              const info = estadoCasaParaMapa(m.casa, ventanas);
+              const colorClass = info.sinVentanas ? "mm-vacia" : (info.etapa ? "mm-"+info.etapa : "");
+              return `
+              <div class="mapa-marker ${colorClass}" data-mid="${esc(m.id)}" data-casa="${esc(m.casa)}" style="left:${(m.x*100).toFixed(2)}%;top:${(m.y*100).toFixed(2)}%;transform:translate(-50%,-50%) scale(${(1/mapaZoom).toFixed(3)});">
+                ${info.incidenciaAbierta ? `<span class="mm-alerta">⚠️</span>` : ""}
+                <span class="mm-label">${esc(m.casa)}</span>
+              </div>`;
+            }).join("")}
+          </div>
+          <div class="mapa-zoom-controles">
+            <button type="button" class="mapa-zoom-btn" id="btnMapaZoomIn" title="Ampliar">＋</button>
+            <button type="button" class="mapa-zoom-btn" id="btnMapaZoomOut" title="Reducir">－</button>
+            ${mapaZoom > 1 ? `<button type="button" class="mapa-zoom-btn" id="btnMapaZoomReset" title="Restablecer">↺</button>` : ""}
+          </div>
         </div>
         ${admin ? `<input type="file" id="inpMapa2" accept="image/*,.pdf" style="display:none;" />` : ""}
       </div>
@@ -1554,11 +1571,124 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
     selMapa.addEventListener("change", ()=>{
       mapaSeleccionadoId = selMapa.value;
       modoEdicionMapa = false;
+      mapaZoom = 1; mapaPanX = 0; mapaPanY = 0; // el plano nuevo empieza sin ampliar
       pintarMapa(mapas, ventanas);
     });
 
+    // --- Ampliar/desplazar SOLO el plano (pellizco, rueda, doble toque o los botones +/-),
+    // sin afectar al zoom del resto de la página. Las marcas se re-escalan al revés del zoom para
+    // que no crezcan con el plano — solo cambia de tamaño la imagen, no las chinchetas.
     const wrap = document.getElementById("mapaWrap");
+    const content = document.getElementById("mapaContent");
+
+    function aplicarTransformMapa(){
+      content.style.transform = `translate(${mapaPanX}px, ${mapaPanY}px) scale(${mapaZoom})`;
+      content.querySelectorAll(".mapa-marker").forEach(el=>{
+        el.style.transform = `translate(-50%,-50%) scale(${(1/mapaZoom).toFixed(3)})`;
+      });
+    }
+
+    function limitarPanMapa(){
+      const rect = wrap.getBoundingClientRect();
+      const maxX = Math.max(0, (mapaZoom - 1) * rect.width);
+      const maxY = Math.max(0, (mapaZoom - 1) * rect.height);
+      mapaPanX = Math.min(0, Math.max(-maxX, mapaPanX));
+      mapaPanY = Math.min(0, Math.max(-maxY, mapaPanY));
+    }
+
+    // focoX/focoY: punto de la pantalla (relativo al recuadro del plano) sobre el que centrar el
+    // nuevo zoom, para que sea ese punto (el sitio del pellizco, del doble toque o del cursor) el
+    // que se quede fijo en vez de que el plano "salte" hacia la esquina.
+    function fijarZoomMapa(nuevoZoom, focoX, focoY){
+      nuevoZoom = Math.min(5, Math.max(1, nuevoZoom));
+      const factor = nuevoZoom / mapaZoom;
+      mapaPanX = focoX - (focoX - mapaPanX) * factor;
+      mapaPanY = focoY - (focoY - mapaPanY) * factor;
+      mapaZoom = nuevoZoom;
+      if(mapaZoom === 1){ mapaPanX = 0; mapaPanY = 0; }
+      limitarPanMapa();
+      aplicarTransformMapa();
+      const btnReset = document.getElementById("btnMapaZoomReset");
+      const controles = wrap.querySelector(".mapa-zoom-controles");
+      if(mapaZoom > 1 && !btnReset && controles){
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "mapa-zoom-btn"; b.id = "btnMapaZoomReset"; b.title = "Restablecer"; b.textContent = "↺";
+        b.addEventListener("click", (e)=>{ e.stopPropagation(); mapaZoom=1; mapaPanX=0; mapaPanY=0; aplicarTransformMapa(); b.remove(); });
+        controles.appendChild(b);
+      } else if(mapaZoom === 1 && btnReset){
+        btnReset.remove();
+      }
+    }
+
+    let gestoMapa = null; // pellizco o arrastre con un dedo en curso
+    let gestoMovido = false; // para no confundir un pellizco/arrastre con un toque de marcar
+
+    wrap.addEventListener("touchstart", (e)=>{
+      const rect = wrap.getBoundingClientRect();
+      if(e.touches.length === 2){
+        e.preventDefault();
+        const [t1,t2] = e.touches;
+        gestoMapa = {
+          tipo: "pellizco",
+          distIni: Math.hypot(t2.clientX-t1.clientX, t2.clientY-t1.clientY),
+          zoomIni: mapaZoom,
+          focoX: (t1.clientX+t2.clientX)/2 - rect.left,
+          focoY: (t1.clientY+t2.clientY)/2 - rect.top
+        };
+        gestoMovido = true;
+      } else if(e.touches.length === 1 && mapaZoom > 1){
+        const t = e.touches[0];
+        gestoMapa = { tipo: "arrastre", x0: t.clientX, y0: t.clientY, panX0: mapaPanX, panY0: mapaPanY };
+        gestoMovido = false;
+      } else {
+        gestoMovido = false;
+      }
+    }, { passive: false });
+
+    wrap.addEventListener("touchmove", (e)=>{
+      if(!gestoMapa) return;
+      if(gestoMapa.tipo === "pellizco" && e.touches.length === 2){
+        e.preventDefault();
+        const [t1,t2] = e.touches;
+        const dist = Math.hypot(t2.clientX-t1.clientX, t2.clientY-t1.clientY);
+        fijarZoomMapa(gestoMapa.zoomIni * (dist / gestoMapa.distIni), gestoMapa.focoX, gestoMapa.focoY);
+      } else if(gestoMapa.tipo === "arrastre" && e.touches.length === 1){
+        e.preventDefault();
+        const t = e.touches[0];
+        const dx = t.clientX - gestoMapa.x0, dy = t.clientY - gestoMapa.y0;
+        if(Math.abs(dx) > 4 || Math.abs(dy) > 4) gestoMovido = true;
+        mapaPanX = gestoMapa.panX0 + dx; mapaPanY = gestoMapa.panY0 + dy;
+        limitarPanMapa();
+        aplicarTransformMapa();
+      }
+    }, { passive: false });
+
+    wrap.addEventListener("touchend", (e)=>{
+      if(e.touches.length === 0) gestoMapa = null;
+      else if(gestoMapa && gestoMapa.tipo === "pellizco") gestoMapa = null; // se levantó uno de los dos dedos
+    }, { passive: true });
+
+    wrap.addEventListener("wheel", (e)=>{
+      e.preventDefault();
+      const rect = wrap.getBoundingClientRect();
+      const delta = e.deltaY < 0 ? 1.15 : (1/1.15);
+      fijarZoomMapa(mapaZoom * delta, e.clientX - rect.left, e.clientY - rect.top);
+    }, { passive: false });
+
+    wrap.addEventListener("dblclick", (e)=>{
+      const rect = wrap.getBoundingClientRect();
+      fijarZoomMapa(mapaZoom > 1 ? 1 : 2.2, e.clientX - rect.left, e.clientY - rect.top);
+    });
+
+    const btnZoomIn = document.getElementById("btnMapaZoomIn");
+    const btnZoomOut = document.getElementById("btnMapaZoomOut");
+    const btnZoomReset0 = document.getElementById("btnMapaZoomReset");
+    if(btnZoomIn) btnZoomIn.addEventListener("click", (e)=>{ e.stopPropagation(); const rect = wrap.getBoundingClientRect(); fijarZoomMapa(mapaZoom * 1.4, rect.width/2, rect.height/2); });
+    if(btnZoomOut) btnZoomOut.addEventListener("click", (e)=>{ e.stopPropagation(); const rect = wrap.getBoundingClientRect(); fijarZoomMapa(mapaZoom / 1.4, rect.width/2, rect.height/2); });
+    if(btnZoomReset0) btnZoomReset0.addEventListener("click", (e)=>{ e.stopPropagation(); mapaZoom = 1; mapaPanX = 0; mapaPanY = 0; aplicarTransformMapa(); btnZoomReset0.remove(); });
+
     wrap.addEventListener("click", (e)=>{
+      if(gestoMovido){ gestoMovido = false; return; } // fue un pellizco/arrastre, no un toque para marcar
       const markerEl = e.target.closest(".mapa-marker");
       if(!(admin && modoEdicionMapa)){
         if(markerEl) navegar(`#/obra/${obraId}/ventanas/${encodeURIComponent(markerEl.dataset.casa)}`);
