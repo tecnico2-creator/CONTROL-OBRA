@@ -206,6 +206,10 @@
     max-width:88vw;text-align:center;
   }
   #toast.show{opacity:1;bottom:34px;}
+  .conn-banner{display:none;padding:7px 16px;font-size:12.5px;font-weight:600;text-align:center;color:#fff;}
+  .conn-banner.show{display:block;}
+  .conn-banner.offline{background:var(--gris-600);}
+  .conn-banner.syncing{background:var(--naranja);}
   .modal-bg{
     position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:flex-end;
     justify-content:center;z-index:200;
@@ -274,6 +278,8 @@
   </button>
   <button class="icon-btn" id="btnPerfil" title="Mi cuenta" style="display:none;">👤</button>
 </div>
+
+<div class="conn-banner" id="connBanner"></div>
 
 <main id="app">
   <div class="center" style="padding:60px 0;">
@@ -456,6 +462,7 @@ let notifVistos = new Set();
 let notifNuevas = false;
 let unsubscribers = []; // listeners activos de la pantalla actual, se limpian al cambiar de ruta
 let qrHidden = null; // contenedor oculto para generar QR
+let cambiosPendientes = false; // true si el listener de la obra/ventana actual tiene escrituras aún sin confirmar por el servidor
 
 function esAdmin(){ return !!(currentUserData && currentUserData.rol === "admin"); }
 function nombreUsuario(){ return currentUserData ? (currentUserData.nombre || "") : ""; }
@@ -471,6 +478,30 @@ function toast(msg){
   t.classList.add("show");
   clearTimeout(toast._t);
   toast._t = setTimeout(()=> t.classList.remove("show"), 2600);
+}
+
+// Modo con menos datos: la app guarda los cambios en el propio móvil (vía Firestore offline,
+// activado en init()) aunque no haya cobertura, y los sube solos en cuanto vuelve la señal — aquí
+// solo se avisa de en qué situación está, para que nadie piense que se ha perdido lo que ha tocado.
+function actualizarBannerConexion(){
+  const banner = document.getElementById("connBanner");
+  if(!banner) return;
+  if(!navigator.onLine){
+    banner.textContent = "📶 Sin conexión — los cambios se guardan en el móvil y se suben solos en cuanto vuelva la señal";
+    banner.className = "conn-banner show offline";
+  } else if(cambiosPendientes){
+    banner.textContent = "🔄 Sincronizando cambios…";
+    banner.className = "conn-banner show syncing";
+  } else {
+    banner.className = "conn-banner";
+  }
+}
+
+// Llamar desde un onSnapshot con {includeMetadataChanges:true} pasándole doc.metadata: mientras el
+// servidor no ha confirmado todavía la última escritura local, hasPendingWrites viene a true.
+function marcarPendiente(metadata){
+  cambiosPendientes = !!(metadata && metadata.hasPendingWrites);
+  actualizarBannerConexion();
 }
 
 function esc(s){
@@ -1452,9 +1483,9 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
         <div class="card">
           <div class="empty">Todavía no hay un plano de esta promoción.</div>
           ${admin ? `
-            <input type="file" id="inpMapa" accept="image/*" style="display:none;" />
+            <input type="file" id="inpMapa" accept="image/*,.pdf" style="display:none;" />
             <button class="btn btn-primary btn-block" id="btnSubirMapa" style="margin-top:10px;">📤 Subir plano de la promoción</button>
-            <p class="muted" style="margin-top:8px;">Sube una imagen del plano (foto o captura) y después podrás marcar sobre ella dónde está cada casa.</p>
+            <p class="muted" style="margin-top:8px;">Sube una imagen del plano (foto o captura) o directamente el PDF del arquitecto — si es un PDF se usa su primera página. Después podrás marcar sobre ella dónde está cada casa.</p>
             ${!CLOUDINARY_OK ? `<p class="muted" style="margin-top:4px;">Falta configurar Cloudinary para poder subir el plano (ver README.md).</p>` : ""}
           ` : `<div class="empty">La oficina todavía no ha subido el plano de esta obra.</div>`}
         </div>
@@ -1495,8 +1526,9 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
             </div>`;
           }).join("")}
         </div>
-        ${admin ? `<input type="file" id="inpMapa2" accept="image/*" style="display:none;" />` : ""}
+        ${admin ? `<input type="file" id="inpMapa2" accept="image/*,.pdf" style="display:none;" />` : ""}
       </div>
+      ${admin ? `<p class="muted" style="font-size:11.5px;margin-top:6px;">Si has subido un PDF y el plano no se ve, revisa el punto 5 de la sección 2 del README (Cloudinary).</p>` : ""}
       ${admin && casasSinMarcar.length ? `
         <div class="card" style="margin-top:14px;">
           <div class="section-title">Casas todavía sin marcar en el plano</div>
@@ -1581,9 +1613,10 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
     }).catch(err=> cont.innerHTML = `<div class="empty">Error cargando estadísticas: ${esc(err.message)}</div>`);
   }
 
-  const unsub = obraRef.onSnapshot(doc=>{
+  const unsub = obraRef.onSnapshot({ includeMetadataChanges: true }, doc=>{
     if(!doc.exists){ toast("Esta obra ya no existe"); navegar("#/"); return; }
     obraData = doc.data();
+    marcarPendiente(doc.metadata);
     pintar();
   }, err=> toast("Error: " + err.message));
   unsubscribers.push(unsub);
@@ -2072,9 +2105,10 @@ function renderVentana(obraId, ventanaId){
     if(ultimoV) pintar(ultimoV);
   });
 
-  const unsub = vRef.onSnapshot(doc=>{
+  const unsub = vRef.onSnapshot({ includeMetadataChanges: true }, doc=>{
     if(!doc.exists){ toast("Esta ventana ya no existe"); navegar(`#/obra/${obraId}`); return; }
     const data = doc.data();
+    marcarPendiente(doc.metadata);
     // Este código QR quedó vinculado a otra ventana ya existente (ver guardarAsignacion):
     // redirige de forma transparente a los datos reales, sin duplicar nada.
     if(data.aliasTo && data.aliasTo !== ventanaId){ navegar(`#/ventana/${obraId}/${data.aliasTo}`); return; }
@@ -2543,8 +2577,15 @@ async function subirMapaObra(obraId, file){
   if(!CLOUDINARY_OK){ toast("Falta configurar Cloudinary para poder subir el plano (ver README.md)"); return; }
   toast("Subiendo plano…");
   try{
-    const { url } = await subirArchivoCloudinary(file);
-    await db.collection("obras").doc(obraId).update({ mapaUrl: url });
+    const { url, publicId } = await subirArchivoCloudinary(file);
+    const esPdf = /\.pdf$/i.test(file.name||"") || file.type === "application/pdf";
+    // El plano se pinta en un <img>, y un PDF no se puede mostrar ahí directamente: se le pide a
+    // Cloudinary que convierta su primera página a JPG (pg_1), reutilizando el mismo archivo que
+    // ya se ha subido — así no hace falta guardar dos URLs distintas para la misma obra.
+    const mapaUrl = esPdf
+      ? `https://res.cloudinary.com/${CLOUDINARY_CONFIG.cloudName}/image/upload/pg_1/${publicId}.jpg`
+      : url;
+    await db.collection("obras").doc(obraId).update({ mapaUrl });
     toast("Plano subido");
   }catch(err){ toast("Error subiendo el plano: " + err.message); }
 }
@@ -3654,6 +3695,11 @@ function init(){
   qrHidden.style.cssText = "position:fixed;left:-9999px;top:-9999px;visibility:hidden;";
   document.body.appendChild(qrHidden);
 
+  // Aviso de conexión: funciona tanto si falta configurar Firebase como una vez configurado.
+  window.addEventListener("online", actualizarBannerConexion);
+  window.addEventListener("offline", actualizarBannerConexion);
+  actualizarBannerConexion();
+
   if(!CONFIG_OK){
     window.addEventListener("hashchange", route);
     route();
@@ -3662,6 +3708,13 @@ function init(){
 
   app = firebase.initializeApp(firebaseConfig);
   db = firebase.firestore();
+  // Modo con menos datos: guarda los cambios en el propio dispositivo (IndexedDB) cuando no hay
+  // cobertura y los sincroniza solo en cuanto vuelve la señal, en vez de perderlos sin más aviso.
+  // Si el navegador no lo soporta (modo incógnito, varias pestañas sin sincronizar, etc.) la app
+  // sigue funcionando igual, solo que sin ese margen sin conexión.
+  db.enablePersistence({ synchronizeTabs: true }).catch((err)=>{
+    console.warn("No se pudo activar el modo sin conexión:", err && (err.code || err.message));
+  });
   auth = firebase.auth();
 
   window.addEventListener("hashchange", route);
