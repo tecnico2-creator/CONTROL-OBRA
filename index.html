@@ -1087,11 +1087,14 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
   let obraData = null;
   let ventanas = [];
   let planos = [];
+  let mapas = []; // planos de la promoción (uno o varios: por planta, por bloque...)
   let filtroReferencia = "";
   let filtroTexto = casaInicial || ""; // buscador de ventana por código/número o por casa (o casa venida del mapa)
   let seleccionVarios = false; // modo "seleccionar varias" en el grupo "Sin casa asignada"
   let idsSeleccionVarios = new Set();
-  let modoEdicionMapa = false; // solo admin: añadir/editar marcas en el plano de la promoción
+  let modoEdicionMapa = false; // solo admin: añadir/editar marcas en el plano seleccionado
+  let mapaSeleccionadoId = null; // qué plano se está viendo/editando ahora mismo
+  let migracionMapaIntentada = false; // evita reintentar varias veces la migración del mapa antiguo (single-map)
 
   function pintar(){
     if(!obraData){ return; }
@@ -1128,7 +1131,7 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
         b.addEventListener("click", ()=> navegar(`#/obra/${obraId}/${b.dataset.tab}`));
       });
       if(tab === "planos") pintarPlanos();
-      else if(tab === "mapa") pintarMapa(ventanasVisibles);
+      else if(tab === "mapa") pintarMapa(mapas, ventanasVisibles);
       else pintarVentanasGrid(obraId, ventanasVisibles);
       return;
     }
@@ -1223,7 +1226,7 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
 
     if(tab === "fotos") pintarFotosNotas(ventanasVisibles);
     else if(tab === "planos") pintarPlanos();
-    else if(tab === "mapa") pintarMapa(ventanasVisibles);
+    else if(tab === "mapa") pintarMapa(mapas, ventanasVisibles);
     else if(tab === "stats") pintarEstadisticasObra();
     else pintarVentanasGrid(obraId, ventanasVisibles);
   }
@@ -1473,49 +1476,59 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
     }
   }
 
-  function pintarMapa(ventanas){
+  function pintarMapa(mapas, ventanas){
     const cont = document.getElementById("tabContent");
-    const mapaUrl = obraData.mapaUrl;
-    const marcadores = obraData.mapaMarcadores || [];
 
-    if(!mapaUrl){
+    if(!mapas.length){
       cont.innerHTML = `
         <div class="card">
-          <div class="empty">Todavía no hay un plano de esta promoción.</div>
+          <div class="empty">Todavía no hay ningún plano de esta promoción.</div>
           ${admin ? `
-            <input type="file" id="inpMapa" accept="image/*,.pdf" style="display:none;" />
             <button class="btn btn-primary btn-block" id="btnSubirMapa" style="margin-top:10px;">📤 Subir plano de la promoción</button>
-            <p class="muted" style="margin-top:8px;">Sube una imagen del plano (foto o captura) o directamente el PDF del arquitecto — si es un PDF se usa su primera página. Después podrás marcar sobre ella dónde está cada casa.</p>
+            <p class="muted" style="margin-top:8px;">Sube una imagen (foto o captura) o directamente el PDF del arquitecto — si es un PDF se usa su primera página. Si la obra tiene varias plantas o bloques, puedes subir un plano distinto para cada uno.</p>
             ${!CLOUDINARY_OK ? `<p class="muted" style="margin-top:4px;">Falta configurar Cloudinary para poder subir el plano (ver README.md).</p>` : ""}
-          ` : `<div class="empty">La oficina todavía no ha subido el plano de esta obra.</div>`}
+          ` : `<div class="empty">La oficina todavía no ha subido ningún plano de esta obra.</div>`}
         </div>
       `;
       if(admin){
-        document.getElementById("btnSubirMapa").addEventListener("click", ()=> document.getElementById("inpMapa").click());
-        document.getElementById("inpMapa").addEventListener("change", (e)=>{
-          if(e.target.files[0]) subirMapaObra(obraId, e.target.files[0]);
-        });
+        document.getElementById("btnSubirMapa").addEventListener("click", ()=> abrirNuevoPlanoMapa(obraId, mapas, (id)=>{ mapaSeleccionadoId = id; pintar(); }));
       }
       return;
     }
+
+    // Recuerda el plano elegido; si ya no existe (se borró) o es la primera vez, se abre el más reciente.
+    if(!mapaSeleccionadoId || !mapas.some(m=>m.id===mapaSeleccionadoId)) mapaSeleccionadoId = mapas[mapas.length-1].id;
+    const mapaActual = mapas.find(m=>m.id===mapaSeleccionadoId);
+    const marcadores = mapaActual.marcadores || [];
 
     const casasTotales = [...new Set(ventanas.map(v=>v.casa).filter(Boolean))].sort(compararNatural);
     const casasSinMarcar = casasTotales.filter(c => !marcadores.some(m=>m.casa===c));
 
     cont.innerHTML = `
       <div class="card" style="padding:0;overflow:hidden;">
-        <div style="padding:12px 14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-          <span class="muted" style="font-size:12.5px;">${marcadores.length ? `${marcadores.length} casa(s) marcadas en el plano` : "Todavía no hay ninguna casa marcada"}</span>
+        <div style="padding:12px 14px;display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+          <label class="field" style="margin:0;flex:1;min-width:150px;">
+            <span>Plano${mapas.length>1 ? ` (${mapas.length})` : ""}</span>
+            <select id="selMapaActivo">
+              ${mapas.map(m=>`<option value="${esc(m.id)}" ${m.id===mapaSeleccionadoId?"selected":""}>${esc(m.nombre||"Plano")}</option>`).join("")}
+            </select>
+          </label>
+          ${admin ? `<button class="btn btn-outline btn-sm" id="btnAnadirMapa">➕ Añadir plano</button>` : ""}
+        </div>
+        <div style="padding:0 14px 12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+          <span class="muted" style="font-size:12.5px;">${marcadores.length ? `${marcadores.length} casa(s) marcadas en este plano` : "Todavía no hay ninguna casa marcada en este plano"}</span>
           ${admin ? `
-            <div style="display:flex;gap:14px;flex-wrap:wrap;">
+            <div style="display:flex;gap:12px;flex-wrap:wrap;">
               <button class="link-btn" id="btnEditarMapa">${modoEdicionMapa ? "✅ Terminar edición" : "✏️ Editar marcas"}</button>
-              <button class="link-btn" id="btnCambiarMapa">🔄 Cambiar plano</button>
+              <button class="link-btn" id="btnRenombrarMapa">✏️ Renombrar</button>
+              <button class="link-btn" id="btnCambiarMapa">🔄 Cambiar imagen</button>
+              <button class="link-btn" id="btnBorrarMapa" style="color:var(--rojo);">🗑️ Eliminar plano</button>
             </div>
           ` : ""}
         </div>
         ${admin && modoEdicionMapa ? `<p class="muted" style="padding:0 14px 10px;font-size:12.5px;">Toca sobre el plano para añadir una casa nueva. Toca una marca ya puesta para cambiarla de nombre o borrarla.</p>` : ""}
         <div class="mapa-wrap ${admin && modoEdicionMapa ? "editando" : ""}" id="mapaWrap">
-          <img src="${esc(mapaUrl)}" id="mapaImg" draggable="false" />
+          <img src="${esc(mapaActual.url)}" id="mapaImg" draggable="false" />
           ${marcadores.map(m=>{
             const info = estadoCasaParaMapa(m.casa, ventanas);
             const colorClass = info.sinVentanas ? "mm-vacia" : (info.etapa ? "mm-"+info.etapa : "");
@@ -1531,11 +1544,18 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
       ${admin ? `<p class="muted" style="font-size:11.5px;margin-top:6px;">Si has subido un PDF y el plano no se ve, revisa el punto 5 de la sección 2 del README (Cloudinary).</p>` : ""}
       ${admin && casasSinMarcar.length ? `
         <div class="card" style="margin-top:14px;">
-          <div class="section-title">Casas todavía sin marcar en el plano</div>
+          <div class="section-title">Casas de este plano todavía sin marcar</div>
           <p class="muted" style="font-size:12.5px;margin-top:4px;">${casasSinMarcar.map(esc).join(", ")}</p>
         </div>
       ` : ""}
     `;
+
+    const selMapa = document.getElementById("selMapaActivo");
+    selMapa.addEventListener("change", ()=>{
+      mapaSeleccionadoId = selMapa.value;
+      modoEdicionMapa = false;
+      pintarMapa(mapas, ventanas);
+    });
 
     const wrap = document.getElementById("mapaWrap");
     wrap.addEventListener("click", (e)=>{
@@ -1545,24 +1565,31 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
         return;
       }
       if(markerEl){
-        abrirEditarMarcadorMapa(obraId, marcadores, markerEl.dataset.mid);
+        abrirEditarMarcadorMapa(obraId, mapaActual.id, marcadores, markerEl.dataset.mid);
         return;
       }
       const rect = document.getElementById("mapaImg").getBoundingClientRect();
       const x = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
       const y = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height));
-      abrirNuevoMarcadorMapa(obraId, casasTotales, marcadores, x, y);
+      abrirNuevoMarcadorMapa(obraId, mapaActual.id, casasTotales, marcadores, x, y);
     });
 
     if(admin){
+      document.getElementById("btnAnadirMapa").addEventListener("click", ()=>{
+        abrirNuevoPlanoMapa(obraId, mapas, (id)=>{ mapaSeleccionadoId = id; modoEdicionMapa = false; pintar(); });
+      });
       document.getElementById("btnEditarMapa").addEventListener("click", ()=>{
         modoEdicionMapa = !modoEdicionMapa;
-        pintarMapa(ventanas);
+        pintarMapa(mapas, ventanas);
       });
-      const cambiar = ()=> document.getElementById("inpMapa2").click();
-      document.getElementById("btnCambiarMapa").addEventListener("click", cambiar);
+      document.getElementById("btnRenombrarMapa").addEventListener("click", ()=> abrirRenombrarMapa(obraId, mapaActual));
+      document.getElementById("btnBorrarMapa").addEventListener("click", async ()=>{
+        const ok = await eliminarMapa(obraId, mapaActual.id);
+        if(ok) mapaSeleccionadoId = null; // se reasigna solo al siguiente plano en el próximo render
+      });
+      document.getElementById("btnCambiarMapa").addEventListener("click", ()=> document.getElementById("inpMapa2").click());
       document.getElementById("inpMapa2").addEventListener("change", (e)=>{
-        if(e.target.files[0]) subirMapaObra(obraId, e.target.files[0]);
+        if(e.target.files[0]) cambiarImagenMapa(obraId, mapaActual.id, e.target.files[0]);
       });
     }
   }
@@ -1638,6 +1665,23 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
     pintar();
   }, err=> toast("Error cargando planos: " + err.message));
   unsubscribers.push(unsub3);
+
+  const unsub4 = obraRef.collection("mapas").orderBy("fecha").onSnapshot(snap=>{
+    mapas = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    // Compatibilidad con obras que ya tenían un único mapa guardado directamente en la obra
+    // (versión anterior, un solo plano): la primera vez que se entra aquí, si no hay ningún plano
+    // todavía en esta lista nueva pero sí existían esos datos antiguos, se migran automáticamente
+    // a un primer plano llamado "Plano" — así no se pierde el trabajo ya hecho.
+    if(!migracionMapaIntentada && mapas.length===0 && obraData && obraData.mapaUrl){
+      migracionMapaIntentada = true;
+      obraRef.collection("mapas").add({
+        nombre: "Plano", url: obraData.mapaUrl, marcadores: obraData.mapaMarcadores || [],
+        fecha: new Date().toISOString()
+      }).catch(()=>{});
+    }
+    pintar();
+  }, err=> toast("Error cargando el mapa: " + err.message));
+  unsubscribers.push(unsub4);
 }
 
 function abrirAddVentanas(obraId, totalActual){
@@ -2571,28 +2615,99 @@ async function borrarPlano(obraId, planoId){
 }
 
 /* ============================================================
-   MAPA DE LA PROMOCIÓN: imagen del plano + marcas de cada casa
+   MAPA DE LA PROMOCIÓN: uno o varios planos (por planta, por bloque...)
+   con imagen + marcas de cada casa, guardados en obras/{obraId}/mapas
    ============================================================ */
-async function subirMapaObra(obraId, file){
+
+// El plano se pinta en un <img>, y un PDF no se puede mostrar ahí directamente: se le pide a
+// Cloudinary que convierta su primera página a JPG (pg_1), reutilizando el mismo archivo que ya
+// se ha subido — así no hace falta guardar dos URLs distintas para el mismo plano.
+function urlDesdeArchivoSubido(file, subida){
+  const esPdf = /\.pdf$/i.test(file.name||"") || file.type === "application/pdf";
+  return esPdf
+    ? `https://res.cloudinary.com/${CLOUDINARY_CONFIG.cloudName}/image/upload/pg_1/${subida.publicId}.jpg`
+    : subida.url;
+}
+
+// Devuelve el id del nuevo plano (o null si falló), para que quien lo llame pueda dejarlo
+// seleccionado automáticamente.
+async function subirMapaObra(obraId, file, nombre){
+  if(!CLOUDINARY_OK){ toast("Falta configurar Cloudinary para poder subir el plano (ver README.md)"); return null; }
+  toast("Subiendo plano…");
+  try{
+    const subida = await subirArchivoCloudinary(file);
+    const ref = await db.collection("obras").doc(obraId).collection("mapas").add({
+      nombre: nombre || "Plano",
+      url: urlDesdeArchivoSubido(file, subida),
+      marcadores: [],
+      fecha: new Date().toISOString()
+    });
+    toast("Plano subido");
+    return ref.id;
+  }catch(err){ toast("Error subiendo el plano: " + err.message); return null; }
+}
+
+function abrirNuevoPlanoMapa(obraId, mapasActuales, onCreado){
+  const nombreSugerido = mapasActuales.length ? `Planta ${mapasActuales.length + 1}` : "Planta baja";
+  openModal(`
+    <h3>${mapasActuales.length ? "Añadir otro plano" : "Subir plano de la promoción"}</h3>
+    <label class="field"><span>Nombre (planta, bloque...)</span>
+      <input type="text" id="inpNombreMapa" value="${esc(nombreSugerido)}" placeholder="Ej: Planta 1, Bloque A..." autofocus />
+    </label>
+    <label class="field"><span>Imagen o PDF del plano</span>
+      <input type="file" id="inpArchivoMapa" accept="image/*,.pdf" />
+    </label>
+    <button class="btn btn-primary btn-block" id="btnSubirNuevoMapa">Subir</button>
+  `);
+  document.getElementById("btnSubirNuevoMapa").addEventListener("click", async ()=>{
+    const nombre = document.getElementById("inpNombreMapa").value.trim();
+    const file = document.getElementById("inpArchivoMapa").files[0];
+    if(!nombre){ toast("Ponle un nombre al plano (por ejemplo, la planta)"); return; }
+    if(!file){ toast("Elige la imagen o el PDF del plano"); return; }
+    closeModal();
+    const nuevoId = await subirMapaObra(obraId, file, nombre);
+    if(nuevoId && onCreado) onCreado(nuevoId);
+  });
+}
+
+async function cambiarImagenMapa(obraId, mapaId, file){
   if(!CLOUDINARY_OK){ toast("Falta configurar Cloudinary para poder subir el plano (ver README.md)"); return; }
   toast("Subiendo plano…");
   try{
-    const { url, publicId } = await subirArchivoCloudinary(file);
-    const esPdf = /\.pdf$/i.test(file.name||"") || file.type === "application/pdf";
-    // El plano se pinta en un <img>, y un PDF no se puede mostrar ahí directamente: se le pide a
-    // Cloudinary que convierta su primera página a JPG (pg_1), reutilizando el mismo archivo que
-    // ya se ha subido — así no hace falta guardar dos URLs distintas para la misma obra.
-    const mapaUrl = esPdf
-      ? `https://res.cloudinary.com/${CLOUDINARY_CONFIG.cloudName}/image/upload/pg_1/${publicId}.jpg`
-      : url;
-    await db.collection("obras").doc(obraId).update({ mapaUrl });
-    toast("Plano subido");
+    const subida = await subirArchivoCloudinary(file);
+    await db.collection("obras").doc(obraId).collection("mapas").doc(mapaId).update({ url: urlDesdeArchivoSubido(file, subida) });
+    toast("Plano actualizado");
   }catch(err){ toast("Error subiendo el plano: " + err.message); }
 }
 
-async function guardarMarcadoresMapa(obraId, marcadores){
+function abrirRenombrarMapa(obraId, mapa){
+  openModal(`
+    <h3>Renombrar plano</h3>
+    <label class="field"><span>Nombre</span><input type="text" id="inpNombreMapaEd" value="${esc(mapa.nombre||"")}" autofocus /></label>
+    <button class="btn btn-primary btn-block" id="btnGuardarNombreMapa">Guardar</button>
+  `);
+  document.getElementById("btnGuardarNombreMapa").addEventListener("click", async ()=>{
+    const nombre = document.getElementById("inpNombreMapaEd").value.trim();
+    if(!nombre){ toast("Escribe un nombre"); return; }
+    closeModal();
+    try{
+      await db.collection("obras").doc(obraId).collection("mapas").doc(mapa.id).update({ nombre });
+    }catch(err){ toast("Error: " + err.message); }
+  });
+}
+
+// Devuelve true si se ha eliminado (para que quien llama pueda limpiar la selección actual).
+async function eliminarMapa(obraId, mapaId){
+  if(!confirmar("¿Eliminar este plano y todas sus marcas? El avance de las ventanas no se ve afectado, solo desaparece este plano.")) return false;
   try{
-    await db.collection("obras").doc(obraId).update({ mapaMarcadores: marcadores });
+    await db.collection("obras").doc(obraId).collection("mapas").doc(mapaId).delete();
+    return true;
+  }catch(err){ toast("Error: " + err.message); return false; }
+}
+
+async function guardarMarcadoresMapa(obraId, mapaId, marcadores){
+  try{
+    await db.collection("obras").doc(obraId).collection("mapas").doc(mapaId).update({ marcadores });
   }catch(err){ toast("Error guardando la marca: " + err.message); }
 }
 
@@ -2600,7 +2715,7 @@ function nuevoIdMarcador(){
   return "m" + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
 }
 
-function abrirNuevoMarcadorMapa(obraId, casasExistentes, marcadoresActuales, x, y){
+function abrirNuevoMarcadorMapa(obraId, mapaId, casasExistentes, marcadoresActuales, x, y){
   openModal(`
     <h3>Nueva marca en el plano</h3>
     <label class="field"><span>¿Qué casa es?</span>
@@ -2614,11 +2729,11 @@ function abrirNuevoMarcadorMapa(obraId, casasExistentes, marcadoresActuales, x, 
     if(!casa){ toast("Escribe la casa"); return; }
     const marcadores = [...marcadoresActuales, { id: nuevoIdMarcador(), casa, x, y }];
     closeModal();
-    await guardarMarcadoresMapa(obraId, marcadores);
+    await guardarMarcadoresMapa(obraId, mapaId, marcadores);
   });
 }
 
-function abrirEditarMarcadorMapa(obraId, marcadoresActuales, mid){
+function abrirEditarMarcadorMapa(obraId, mapaId, marcadoresActuales, mid){
   const m = marcadoresActuales.find(mm=>mm.id===mid);
   if(!m) return;
   openModal(`
@@ -2632,13 +2747,13 @@ function abrirEditarMarcadorMapa(obraId, marcadoresActuales, mid){
     if(!casa){ toast("Escribe la casa"); return; }
     const marcadores = marcadoresActuales.map(mm=> mm.id===mid ? {...mm, casa} : mm);
     closeModal();
-    await guardarMarcadoresMapa(obraId, marcadores);
+    await guardarMarcadoresMapa(obraId, mapaId, marcadores);
   });
   document.getElementById("btnBorrarMarcadorEd").addEventListener("click", async ()=>{
     if(!confirmar("¿Quitar esta marca del plano?")) return;
     const marcadores = marcadoresActuales.filter(mm=>mm.id!==mid);
     closeModal();
-    await guardarMarcadoresMapa(obraId, marcadores);
+    await guardarMarcadoresMapa(obraId, mapaId, marcadores);
   });
 }
 
