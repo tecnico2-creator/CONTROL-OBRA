@@ -1118,6 +1118,9 @@ function renderObraDetalle(obraId, tabInicial){
           <button class="btn btn-secondary" id="btnExportEntregadas">✅ Exportar entregadas</button>
         </div>
         <div class="btn-row">
+          <button class="btn btn-secondary" id="btnExportFotosNotas">📷 Exportar fotos y notas (PDF)</button>
+        </div>
+        <div class="btn-row">
           <button class="btn btn-secondary" id="btnInformeObra">📅 Informe de instalación</button>
         </div>
       </div>
@@ -1136,6 +1139,7 @@ function renderObraDetalle(obraId, tabInicial){
     document.getElementById("btnExportPendientes").addEventListener("click", ()=> abrirExportarPendientes(obraId, obraData, ventanasVisibles));
     document.getElementById("btnExportIncidencias").addEventListener("click", ()=> abrirExportarIncidencias(obraId, obraData, ventanasVisibles));
     document.getElementById("btnExportEntregadas").addEventListener("click", ()=> abrirExportarEntregadas(obraId, obraData, ventanasVisibles));
+    document.getElementById("btnExportFotosNotas").addEventListener("click", ()=> generarPdfFotosNotas(obraData, ventanasVisibles));
     document.getElementById("btnInformeObra").addEventListener("click", ()=> abrirInformeInstalacion({ tipo: "obra", obraId, obraNombre: obraData.nombre, ventanas: ventanasVisibles }));
     document.getElementById("btnEliminarObra").addEventListener("click", ()=> abrirConfirmarEliminarObra(obraId, obraData));
     document.getElementById("btnRecalcular").addEventListener("click", async ()=>{
@@ -3068,6 +3072,93 @@ function generarExcelIncidencias(obraData, ventanas){
   XLSX.utils.book_append_sheet(wb, ws, "Incidencias");
   XLSX.writeFile(wb, `Incidencias_${slug(obraData.nombre)}_${new Date().toISOString().slice(0,10)}.xlsx`);
   toast("Excel de incidencias generado");
+}
+
+// PDF con las fotos y anotaciones de cada ventana, agrupado por casa/ventana (igual que el resto
+// de exportaciones), para tener un documento único en vez de tener que mirarlas una a una en la
+// pestaña "Fotos y notas".
+async function generarPdfFotosNotas(obraData, ventanas){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  const conContenido = ordenarVentanas(ventanas.filter(v => (v.notas||[]).length || (v.fotos||[]).length));
+  if(!conContenido.length){ toast("Esta obra todavía no tiene fotos ni anotaciones"); return; }
+  toast("Generando PDF de fotos y notas…");
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const margen = 15, anchoUtil = 210 - margen*2;
+  let y = margen;
+
+  doc.setFontSize(16); doc.setTextColor(20);
+  doc.text(`Fotos y notas — ${obraData.nombre||""}`, margen, y); y += 6;
+  doc.setFontSize(10); doc.setTextColor(120);
+  doc.text(`${obraData.direccion||""}`, margen, y); y += 5;
+  doc.text(`Generado: ${new Date().toLocaleString("es-ES")}`, margen, y); y += 10;
+
+  const totalNotas = conContenido.reduce((n,v)=> n + (v.notas||[]).length, 0);
+  const totalFotos = conContenido.reduce((n,v)=> n + (v.fotos||[]).length, 0);
+  doc.setFontSize(11); doc.setTextColor(20);
+  doc.text(`${totalNotas} anotación${totalNotas===1?"":"es"} y ${totalFotos} foto${totalFotos===1?"":"s"}, en ${conContenido.length} ventana${conContenido.length===1?"":"s"}`, margen, y);
+  y += 8;
+  doc.setDrawColor(200); doc.line(margen, y, 210-margen, y); y += 8;
+
+  const agrupado = conContenido.some(v=>v.casa);
+  let casaActual = null;
+
+  for(const v of conContenido){
+    const casaKey = agrupado ? (v.casa || "Sin casa asignada") : null;
+    if(agrupado && casaKey !== casaActual){
+      if(y > 260){ doc.addPage(); y = margen; }
+      casaActual = casaKey;
+      if(y > margen) y += 3;
+      doc.setFontSize(13); doc.setTextColor(20);
+      doc.text(casaKey === "Sin casa asignada" ? casaKey : `Casa ${casaKey}`, margen, y);
+      y += 7;
+      doc.setDrawColor(225); doc.line(margen, y-4, 210-margen, y-4);
+    }
+    if(y > 270){ doc.addPage(); y = margen; casaActual = null; }
+    const detalle = [v.planta && `Planta ${v.planta}`, v.referencia].filter(Boolean).join(" · ");
+    doc.setFontSize(11.5); doc.setTextColor(20);
+    doc.text(`${etiquetaCorta(v)}${detalle ? " ("+detalle+")" : ""}`, margen + (agrupado?4:0), y);
+    y += 6;
+
+    const sangria = margen + (agrupado?8:4);
+    // Notas y fotos mezcladas por fecha, igual que en la pestaña "Fotos y notas" de la app.
+    const items = [
+      ...(v.notas||[]).map(n=>({tipo:"nota", ...n})),
+      ...(v.fotos||[]).map(f=>({tipo:"foto", ...f}))
+    ].sort((a,b)=> new Date(b.fecha||0) - new Date(a.fecha||0));
+
+    for(const it of items){
+      if(y > 265){ doc.addPage(); y = margen; }
+      doc.setFontSize(9.5); doc.setTextColor(90);
+      doc.text(`${fechaCorta(it.fecha)} · ${it.autor||"—"}`, sangria, y);
+      y += 5;
+      if(it.tipo === "nota"){
+        doc.setFontSize(10.5); doc.setTextColor(30);
+        const lineasTexto = doc.splitTextToSize(it.texto||"", anchoUtil - (sangria-margen));
+        doc.text(lineasTexto, sangria, y);
+        y += lineasTexto.length * 5 + 2;
+      } else {
+        const dataUrl = await urlADataUrl(it.url);
+        if(dataUrl){
+          if(y > 225){ doc.addPage(); y = margen; }
+          try{
+            const formato = formatoImagenDataUrl(dataUrl);
+            const props = doc.getImageProperties(dataUrl);
+            const maxW = 60, maxH = 50;
+            let w = maxW, h = (props.height/props.width)*w;
+            if(h > maxH){ h = maxH; w = (props.width/props.height)*h; }
+            doc.addImage(dataUrl, formato, sangria, y, w, h);
+            y += h + 4;
+          }catch(e){ /* foto no decodificable: se omite sin romper el documento */ }
+        }
+      }
+      y += 3;
+    }
+    y += 2;
+  }
+
+  doc.save(`Fotos_notas_${slug(obraData.nombre)}_${new Date().toISOString().slice(0,10)}.pdf`);
+  toast("PDF de fotos y notas generado");
 }
 
 /* ============================================================
