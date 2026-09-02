@@ -144,6 +144,8 @@
   .vchip .et{font-size:9.5px;color:var(--gris-600);margin-top:2px;}
   .vchip .badges{position:absolute;top:4px;right:4px;display:flex;gap:2px;}
   .vchip .badges span{font-size:9px;}
+  .vchip .vchip-check{position:absolute;top:5px;left:5px;width:16px;height:16px;}
+  .vchip.vchip-sel{outline:2.5px solid var(--primario);background:#eef2ff;}
   .etapa-row{
     display:flex;align-items:center;gap:12px;padding:14px;border-radius:12px;
     background:var(--gris-100);margin-bottom:10px;
@@ -1011,6 +1013,8 @@ function renderObraDetalle(obraId, tabInicial){
   let planos = [];
   let filtroReferencia = "";
   let filtroTexto = ""; // buscador de ventana por código/número o por casa
+  let seleccionVarios = false; // modo "seleccionar varias" en el grupo "Sin casa asignada"
+  let idsSeleccionVarios = new Set();
 
   function pintar(){
     if(!obraData){ return; }
@@ -1174,12 +1178,14 @@ function renderObraDetalle(obraId, tabInicial){
       </div>
     `;
 
-    function chipHtml(v){
+    function chipHtml(v, seleccionable){
       const et = ultimaEtapa(v.estado);
       const sinAsignar = v.asignada === false;
       const nNotas = (v.notas||[]).length, nFotos = (v.fotos||[]).length;
+      const marcada = seleccionable && idsSeleccionVarios.has(v.id);
       return `
-        <div class="vchip ${sinAsignar ? "sin-asignar" : (et?("st-"+et):"")}" data-id="${v.id}">
+        <div class="vchip ${sinAsignar ? "sin-asignar" : (et?("st-"+et):"")} ${marcada?"vchip-sel":""}" data-id="${v.id}">
+          ${seleccionable ? `<input type="checkbox" class="vchip-check" data-check="${v.id}" ${marcada?"checked":""} />` : ""}
           ${(nNotas||nFotos) ? `<div class="badges">${nNotas?`<span>📝</span>`:""}${nFotos?`<span>📷</span>`:""}</div>` : ""}
           <div class="num">${esc(etiquetaCorta(v))}</div>
           <div class="et">${sinAsignar ? "❓ Sin asignar" : (et ? ETAPA_LABEL[et] : "Pendiente")}</div>
@@ -1199,6 +1205,8 @@ function renderObraDetalle(obraId, tabInicial){
         porCasa.get(casaKey).push(v);
       });
       cuerpoHtml = [...porCasa.entries()].map(([casaKey, lista])=>{
+        const esSinCasa = casaKey === "__sin_casa__";
+        const seleccion = esSinCasa && seleccionVarios;
         const checks = lista.reduce((n,v)=> n + pasosCompletados(v.estado), 0);
         const pctCasa = Math.round((checks/(lista.length*ETAPAS.length))*100);
         const porPlanta = new Map();
@@ -1209,15 +1217,21 @@ function renderObraDetalle(obraId, tabInicial){
         });
         const plantasHtml = [...porPlanta.entries()].map(([plantaKey, vs])=>`
           <div class="section-title" style="margin-top:14px;">${plantaKey === "__sin_planta__" ? "Sin planta asignada" : "Planta " + esc(plantaKey)}</div>
-          <div class="vgrid">${vs.map(chipHtml).join("")}</div>
+          <div class="vgrid">${vs.map(v=>chipHtml(v, seleccion)).join("")}</div>
         `).join("");
+        const barraSeleccion = esSinCasa ? `
+          <div style="display:flex;justify-content:flex-end;align-items:center;gap:12px;margin-bottom:${seleccionVarios?"10px":"0"};flex-wrap:wrap;">
+            <button class="link-btn" data-toggle-sel="1">${seleccionVarios ? "Cancelar selección" : "☑️ Seleccionar varias"}</button>
+            ${seleccionVarios ? `<button class="link-btn" id="btnEliminarSeleccionadas" style="color:var(--rojo);" ${idsSeleccionVarios.size?"":"disabled"}>🗑️ Eliminar seleccionadas (${idsSeleccionVarios.size})</button>` : ""}
+          </div>
+        ` : "";
         return `
-          <details class="card" style="padding:0;overflow:hidden;" ${textoNorm ? "open" : ""}>
+          <details class="card" style="padding:0;overflow:hidden;" ${(textoNorm || seleccion) ? "open" : ""}>
             <summary style="padding:14px 16px;cursor:pointer;font-weight:700;display:flex;justify-content:space-between;align-items:center;">
-              <span>${casaKey === "__sin_casa__" ? "Sin casa asignada" : "Casa " + esc(casaKey)} <span class="muted" style="font-weight:500;">· ${lista.length} ventanas</span></span>
+              <span>${esSinCasa ? "Sin casa asignada" : "Casa " + esc(casaKey)} <span class="muted" style="font-weight:500;">· ${lista.length} ventanas</span></span>
               <span style="color:var(--primario);">${pctCasa}%</span>
             </summary>
-            <div style="padding:0 16px 16px 16px;">${plantasHtml}</div>
+            <div style="padding:0 16px 16px 16px;">${barraSeleccion}${plantasHtml}</div>
           </details>
         `;
       }).join("");
@@ -1240,7 +1254,34 @@ function renderObraDetalle(obraId, tabInicial){
     }
 
     cont.querySelectorAll(".vchip").forEach(el=>{
-      el.addEventListener("click", ()=> navegar(`#/ventana/${obraId}/${el.dataset.id}`));
+      el.addEventListener("click", (e)=>{
+        const chk = el.querySelector("[data-check]");
+        if(chk){
+          if(e.target !== chk) { chk.checked = !chk.checked; }
+          const id = chk.dataset.check;
+          if(chk.checked) idsSeleccionVarios.add(id); else idsSeleccionVarios.delete(id);
+          el.classList.toggle("vchip-sel", chk.checked);
+          const btnDel = document.getElementById("btnEliminarSeleccionadas");
+          if(btnDel){ btnDel.textContent = `🗑️ Eliminar seleccionadas (${idsSeleccionVarios.size})`; btnDel.disabled = idsSeleccionVarios.size===0; }
+          return;
+        }
+        navegar(`#/ventana/${obraId}/${el.dataset.id}`);
+      });
+    });
+
+    const btnToggleSel = cont.querySelector("[data-toggle-sel]");
+    if(btnToggleSel) btnToggleSel.addEventListener("click", ()=>{
+      seleccionVarios = !seleccionVarios;
+      idsSeleccionVarios.clear();
+      pintarVentanasGrid(obraId, ventanas);
+    });
+
+    const btnEliminarSel = document.getElementById("btnEliminarSeleccionadas");
+    if(btnEliminarSel) btnEliminarSel.addEventListener("click", async ()=>{
+      const ids = [...idsSeleccionVarios];
+      const ok = await eliminarVentanasSeleccionadas(obraId, ids);
+      if(ok){ seleccionVarios = false; idsSeleccionVarios.clear(); }
+      pintarVentanasGrid(obraId, ventanas);
     });
   }
 
@@ -1567,7 +1608,6 @@ async function eliminarObra(obraId, obraData){
 }
 
 async function eliminarVentana(obraId, ventanaId, v){
-  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
   const obraRef = db.collection("obras").doc(obraId);
   let aliasSnap;
   try{
@@ -1591,6 +1631,27 @@ async function eliminarVentana(obraId, ventanaId, v){
     toast("Ventana eliminada");
     navegar(`#/obra/${obraId}`);
   }catch(err){ toast("Error eliminando: " + err.message); }
+}
+
+// Borrado en bloque para el grupo "Sin casa asignada" (códigos QR genéricos todavía sin usar,
+// sobre todo). Devuelve true si se ha eliminado, false si el usuario ha cancelado o ha fallado.
+async function eliminarVentanasSeleccionadas(obraId, ids){
+  if(!ids.length){ return false; }
+  const aviso = `¿Eliminar est${ids.length===1?"a":"as"} ${ids.length} ventana${ids.length===1?"":"s"} sin casa asignada? Esta acción no se puede deshacer.`;
+  if(!confirmar(aviso)) return false;
+  toast("Eliminando ventanas…");
+  try{
+    const obraRef = db.collection("obras").doc(obraId);
+    const batch = db.batch();
+    ids.forEach(id=> batch.delete(obraRef.collection("ventanas").doc(id)));
+    await batch.commit();
+    try{
+      const snap = await obraRef.collection("ventanas").get();
+      await recalcularProgresoObra(obraId, snap.docs.map(d=>({id:d.id, ...d.data()})));
+    }catch(e){ /* no crítico */ }
+    toast(`${ids.length} ventana${ids.length===1?"":"s"} eliminada${ids.length===1?"":"s"}`);
+    return true;
+  }catch(err){ toast("Error eliminando: " + err.message); return false; }
 }
 
 /* ============================================================
@@ -1621,7 +1682,7 @@ function renderVentana(obraId, ventanaId){
           <h2 style="font-size:19px;">Ventana ${esc(etiquetaCorta(v))}</h2>
           <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end;">
             <button class="link-btn" id="btnEditarAsignacion" style="white-space:nowrap;">✏️ Editar</button>
-            ${esAdmin() ? `<button class="link-btn" id="btnEliminarVentana" style="white-space:nowrap;color:var(--rojo);">🗑️ Eliminar</button>` : ""}
+            <button class="link-btn" id="btnEliminarVentana" style="white-space:nowrap;color:var(--rojo);">🗑️ Eliminar</button>
           </div>
         </div>
         ${descripcionVentana(v) ? `<p class="muted" style="margin-top:2px;">${esc(descripcionVentana(v))}</p>` : ""}
@@ -1819,7 +1880,7 @@ function renderVentana(obraId, ventanaId){
         </p>
         ${formularioAsignacionHtml()}
         <button class="btn btn-primary btn-block" id="btnGuardarAsignacion" style="margin-top:14px;">Asignar y continuar</button>
-        ${esAdmin() ? `<button class="link-btn" id="btnEliminarVentana" style="margin-top:12px;color:var(--rojo);">🗑️ Eliminar este código</button>` : ""}
+        <button class="link-btn" id="btnEliminarVentana" style="margin-top:12px;color:var(--rojo);">🗑️ Eliminar este código</button>
       </div>
     `;
     document.getElementById("btnVolverObra").addEventListener("click", ()=> navegar(`#/obra/${obraId}`));
@@ -3068,13 +3129,28 @@ function claveDia(iso){
   return new Date(iso).toLocaleDateString("sv-SE");
 }
 
+// De todo el historial de una ventana+etapa, nos quedamos solo con el ÚLTIMO cambio
+// (cronológicamente). Si ese último cambio es "marcada" y cae dentro del periodo elegido, es
+// una fila del informe. Así no aparece cada marca/desmarca intermedia (p.ej. una corrección del
+// instalador), solo cuando la etapa quedó guardada definitivamente como marcada.
+function colapsarEventosDefinitivos(eventosEtapa, iniIso, finIso){
+  const ordenados = [...eventosEtapa].sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
+  const ultimoPorClave = new Map();
+  ordenados.forEach(ev=> ultimoPorClave.set(`${ev.obraId||""}|${ev.ventanaId}|${ev.etapa}`, ev));
+  const definitivos = [];
+  ultimoPorClave.forEach(ev=>{
+    if(ev.activar && ev.fecha >= iniIso && ev.fecha < finIso) definitivos.push(ev);
+  });
+  return definitivos;
+}
+
 function abrirInformeInstalacion(ctx){
   if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
   openModal(`
     <h3>Informe de instalación</h3>
     <p class="muted" style="margin-bottom:14px;">
-      Todo lo que ha hecho cada instalador con cada ventana en el periodo elegido${ctx.tipo==="obra" ? "" : ", en todas las obras"}:
-      cada etapa marcada o desmarcada, paso a paso, con el día y la hora exactos.
+      Cada etapa que ha completado cada instalador en cada ventana en el periodo elegido${ctx.tipo==="obra" ? "" : ", en todas las obras"},
+      con el día y la hora exactos en que quedó marcada. Las correcciones (marcar y desmarcar por error) no aparecen, solo el resultado final.
     </p>
     <label class="field"><span>Periodo</span>
       <select id="selPeriodoInforme">
@@ -3113,7 +3189,8 @@ function abrirInformeInstalacion(ctx){
         : (await db.collection("eventos").orderBy("fecha","desc").limit(3000).get()).docs.map(d=>d.data());
       const { ini, fin, label } = calcularRangoInforme(periodo, desde, hasta);
       const iniIso = ini.toISOString(), finIso = fin.toISOString();
-      const filtrados = eventos.filter(ev => ev.tipo === "etapa" && ETAPAS.includes(ev.etapa) && ev.fecha >= iniIso && ev.fecha < finIso);
+      const soloEtapas = eventos.filter(ev => ev.tipo === "etapa" && ETAPAS.includes(ev.etapa));
+      const filtrados = colapsarEventosDefinitivos(soloEtapas, iniIso, finIso);
       const ventanasPorId = ctx.tipo === "obra" ? new Map(ctx.ventanas.map(v=>[v.id, v])) : null;
       const tituloAmbito = ctx.tipo === "obra" ? (ctx.obraNombre || "Obra") : "Todas las obras";
       if(formato === "pdf") generarPdfInformeInstalacion(tituloAmbito, label, filtrados, ventanasPorId);
@@ -3130,6 +3207,7 @@ function generarPdfInformeInstalacion(tituloAmbito, periodoLabel, eventos, venta
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit: "mm", format: "a4" });
   const margen = 15;
+  const anchoUtil = 210 - margen*2;
   let y = margen;
 
   doc.setFontSize(16); doc.setTextColor(20);
@@ -3138,7 +3216,7 @@ function generarPdfInformeInstalacion(tituloAmbito, periodoLabel, eventos, venta
   doc.text(periodoLabel, margen, y); y += 5;
   doc.text(`Generado: ${new Date().toLocaleString("es-ES")}`, margen, y); y += 10;
   doc.setFontSize(11); doc.setTextColor(20);
-  doc.text(`${eventos.length} paso${eventos.length===1?"":"s"} registrado${eventos.length===1?"":"s"} en el periodo`, margen, y);
+  doc.text(`${eventos.length} etapa${eventos.length===1?"":"s"} completada${eventos.length===1?"":"s"} en el periodo`, margen, y);
   y += 8;
   doc.setDrawColor(200); doc.line(margen, y, 210-margen, y); y += 8;
 
@@ -3154,19 +3232,20 @@ function generarPdfInformeInstalacion(tituloAmbito, periodoLabel, eventos, venta
     if(y > 265){ doc.addPage(); y = margen; }
     doc.setFontSize(12.5); doc.setTextColor(20);
     const fechaLegible = new Date(lista[0].fecha).toLocaleDateString("es-ES", { weekday:"long", day:"2-digit", month:"2-digit", year:"numeric" });
-    doc.text(`${fechaLegible}  —  ${lista.length} paso${lista.length===1?"":"s"}`, margen, y); y += 6;
+    doc.text(`${fechaLegible}  —  ${lista.length} etapa${lista.length===1?"":"s"}`, margen, y); y += 6;
     doc.setDrawColor(225); doc.line(margen, y-3.5, 210-margen, y-3.5);
     for(const ev of lista){
-      if(y > 280){ doc.addPage(); y = margen; }
       const v = ventanasPorId ? ventanasPorId.get(ev.ventanaId) : null;
       const detalle = [v && v.casa && `Casa ${v.casa}`, v && v.planta && `Planta ${v.planta}`].filter(Boolean).join(" · ");
       const obraTxt = ventanasPorId ? "" : `${ev.obraNombre||""} — `;
       const hora = new Date(ev.fecha).toLocaleTimeString("es-ES", { hour:"2-digit", minute:"2-digit" });
       const etapaTxt = `${ETAPA_ICONO[ev.etapa]||""} ${ETAPA_LABEL[ev.etapa]||ev.etapa}`;
-      const accion = ev.activar ? "Marcada" : "Desmarcada";
+      const linea = `${hora}  —  ${obraTxt}${ev.ventanaEtiqueta||""}${detalle ? " ("+detalle+")" : ""}  —  ${etapaTxt}  —  ${ev.nombre||"—"}`;
       doc.setFontSize(10); doc.setTextColor(40);
-      doc.text(`${hora}  —  ${obraTxt}${ev.ventanaEtiqueta||""}${detalle ? " ("+detalle+")" : ""}  —  ${etapaTxt}: ${accion}  —  ${ev.nombre||"—"}`, margen+4, y);
-      y += 5.5;
+      const lineasAjustadas = doc.splitTextToSize(linea, anchoUtil - 4);
+      if(y + lineasAjustadas.length*5.5 > 285){ doc.addPage(); y = margen; }
+      doc.text(lineasAjustadas, margen+4, y);
+      y += lineasAjustadas.length * 5.5;
     }
     y += 3;
   }
@@ -3188,7 +3267,6 @@ function generarExcelInformeInstalacion(tituloAmbito, periodoLabel, eventos, ven
       Casa: (v && v.casa) || "", Planta: (v && v.planta) || "",
       Ventana: ev.ventanaEtiqueta || "",
       Etapa: ETAPA_LABEL[ev.etapa] || ev.etapa || "",
-      Acción: ev.activar ? "Marcada" : "Desmarcada",
       Instalador: ev.nombre || ""
     };
   });
