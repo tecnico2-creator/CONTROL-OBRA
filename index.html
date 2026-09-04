@@ -159,10 +159,7 @@
     content:"";display:block;width:16px;height:16px;border-radius:50%;background:var(--gris-400);
     border:2.5px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4);
   }
-  .mapa-marker.mm-instalada::before{background:var(--amarillo);}
-  .mapa-marker.mm-sellada::before{background:var(--naranja);}
-  .mapa-marker.mm-acristalada::before{background:var(--indigo);}
-  .mapa-marker.mm-composite::before{background:var(--teal);}
+  .mapa-marker.mm-pendiente::before{background:var(--rojo);}
   .mapa-marker.mm-terminada::before{background:var(--verde);}
   .mapa-marker.mm-vacia::before{background:#fff;border-style:dashed;border-color:var(--gris-400);}
   .mapa-marker .mm-label{
@@ -378,9 +375,21 @@ function ultimaEtapa(estado){
   for(const e of ETAPAS){ if(estado && estado[e]) last = e; }
   return last;
 }
-function pasosCompletados(estado){
+function pasosCompletados(estado, etapas){
   if(!estado) return 0;
-  return ETAPAS.reduce((n,e)=> n + (estado[e] ? 1 : 0), 0);
+  return (etapas || ETAPAS).reduce((n,e)=> n + (estado[e] ? 1 : 0), 0);
+}
+
+// Composite es una etapa OPCIONAL: cada ventana dice si la lleva o no (v.llevaComposite). Sin
+// decidir todavía (undefined/null, ventanas de antes de este cambio incluidas) se trata como que
+// sí la lleva, para no alterar nada del comportamiento anterior. Estas dos funciones son el único
+// sitio que sabe qué etapas aplican a una ventana en concreto — cascada, %, pendientes y stats
+// las usan en vez de la lista fija ETAPAS para que una ventana sin composite pueda llegar al 100%.
+function etapasVentana(v){
+  return (v && v.llevaComposite === false) ? ETAPAS.filter(e => e !== "composite") : ETAPAS;
+}
+function totalPasosAplicables(ventanas){
+  return ventanas.reduce((n,v)=> n + etapasVentana(v).length, 0);
 }
 
 // Estado de una casa completa para pintar su marca en el mapa de la promoción: la etapa "común" es
@@ -388,13 +397,18 @@ function pasosCompletados(estado){
 // las etapas se marcan en cascada (si una ventana está en "sellada" también está en "instalada").
 function estadoCasaParaMapa(casa, ventanas){
   const de = ventanas.filter(v => (v.casa||"") === casa);
-  if(!de.length) return { etapa: null, sinVentanas: true, incidenciaAbierta: false, pct: 0 };
+  if(!de.length) return { etapa: null, sinVentanas: true, incidenciaAbierta: false, pct: 0, completa: false };
   let etapaComun = null;
-  for(const e of ETAPAS){ if(de.every(v => v.estado && v.estado[e])) etapaComun = e; else break; }
+  // Una ventana sin composite cuenta como "aprobada" en ese punto de la cascada sin necesidad de
+  // marcarlo, para que el cuello de botella pueda seguir avanzando hasta "terminada".
+  for(const e of ETAPAS){ if(de.every(v => (e==="composite" && v.llevaComposite===false) || (v.estado && v.estado[e]))) etapaComun = e; else break; }
   const incidenciaAbierta = de.some(v => (v.incidencias||[]).some(i=>!i.resuelta));
-  const checks = de.reduce((n,v)=> n + pasosCompletados(v.estado), 0);
-  const pct = Math.round((checks/(de.length*ETAPAS.length))*100);
-  return { etapa: etapaComun, sinVentanas: false, incidenciaAbierta, pct };
+  const checks = de.reduce((n,v)=> n + pasosCompletados(v.estado, etapasVentana(v)), 0);
+  const pct = Math.round((checks/totalPasosAplicables(de))*100);
+  // Para el mapa solo importa si la casa está totalmente acabada (verde) o no (rojo) — sin colores
+  // intermedios por etapa.
+  const completa = etapaComun === "terminada";
+  return { etapa: etapaComun, sinVentanas: false, incidenciaAbierta, pct, completa };
 }
 
 // Una ventana tiene datos "avanzados" (casa/planta/referencia) cuando viene de una importación Excel/CSV
@@ -409,6 +423,7 @@ function descripcionVentana(v){
   if(v.casa) partes.push(`Casa ${v.casa}`);
   if(v.planta) partes.push(`Planta ${v.planta}`);
   if(v.referencia) partes.push(`Ref. ${v.referencia}`);
+  if(v.ubicacion) partes.push(v.ubicacion);
   return partes.join(" · ");
 }
 
@@ -854,7 +869,10 @@ function renderListaObras(){
       const progreso = obra.progreso || {};
       const terminadas = progreso.terminada || 0;
       const checks = ETAPAS.reduce((n,e)=> n + (progreso[e]||0), 0);
-      const pct = total ? Math.round((checks/(total*ETAPAS.length))*100) : 0;
+      // Composite es opcional: las ventanas que no lo llevan restan del total de pasos posibles,
+      // para que puedan llegar al 100% sin necesidad de marcar una etapa que no les aplica.
+      const totalAplicable = total*ETAPAS.length - (obra.numSinComposite || 0);
+      const pct = totalAplicable ? Math.round((checks/totalAplicable)*100) : 0;
       return {obra, total, terminadas, pct};
     });
     document.getElementById("listaObras").innerHTML = filas.map(({obra,total,terminadas,pct})=>`
@@ -902,6 +920,9 @@ function renderNuevaObra(){
         // cada vez que se marca una etapa, para no tener que releer todas las ventanas cada vez que
         // se quiere ver el % completado (ver toggleEtapa y recalcularProgresoObra).
         progreso: progresoVacio(),
+        // Cuántas ventanas de la obra NO llevan composite (etapa opcional) — hace falta para calcular
+        // bien el % completado sin tener que releer todas las ventanas (ver etapasVentana más abajo).
+        numSinComposite: 0,
         creadoEn: firebase.firestore.FieldValue.serverTimestamp(),
         creadoPor: nombreUsuario() || "Oficina"
       });
@@ -998,6 +1019,7 @@ async function crearVentanasDesdeFilas(obraId, filas, numeroInicial){
       planta: fila.planta || "",
       numeroPlano: fila.numero || "",
       referencia: fila.referencia || "",
+      ubicacion: fila.ubicacion || "",
       asignada: true,
       estado: estadoVacio(),
       notas: [],
@@ -1023,7 +1045,8 @@ async function leerFilasDesdeArchivo(file){
     casa: ["casa", "vivienda", "numero de casa", "nº casa", "n casa", "portal"],
     planta: ["planta", "piso"],
     numero: ["numero", "nº", "n", "numero de ventana", "nº ventana", "ventana", "num", "codigo"],
-    referencia: ["referencia", "ref", "modelo", "tipo", "tipo ventana", "tipo de ventana"]
+    referencia: ["referencia", "ref", "modelo", "tipo", "tipo ventana", "tipo de ventana"],
+    ubicacion: ["ubicacion", "situacion", "localizacion", "zona", "interior/exterior"]
   };
   function buscarValor(filaObj, claves){
     for(const key of Object.keys(filaObj)){
@@ -1042,9 +1065,10 @@ async function leerFilasDesdeArchivo(file){
         casa: buscarValor(f, MAPA_COLUMNAS.casa),
         planta: buscarValor(f, MAPA_COLUMNAS.planta),
         numero: buscarValor(f, MAPA_COLUMNAS.numero),
-        referencia: buscarValor(f, MAPA_COLUMNAS.referencia)
+        referencia: buscarValor(f, MAPA_COLUMNAS.referencia),
+        ubicacion: buscarValor(f, MAPA_COLUMNAS.ubicacion)
       };
-      if(fila.casa || fila.planta || fila.numero || fila.referencia) filas.push(fila); // descarta filas totalmente vacías
+      if(fila.casa || fila.planta || fila.numero || fila.referencia || fila.ubicacion) filas.push(fila); // descarta filas totalmente vacías
     });
   }
   return filas;
@@ -1052,10 +1076,10 @@ async function leerFilasDesdeArchivo(file){
 
 function descargarPlantillaCsv(){
   const filas = [
-    ["casa","planta","numero","referencia"],
-    ["1","Baja","V01","PVC-120x150"],
-    ["1","1","V02","PVC-90x120"],
-    ["2","Baja","V01","RPT-Corredera-2H"]
+    ["casa","planta","numero","referencia","ubicacion"],
+    ["1","Baja","V01","PVC-120x150","Exterior"],
+    ["1","1","V02","PVC-90x120","Interior"],
+    ["2","Baja","V01","RPT-Corredera-2H","Patio interior"]
   ];
   const csv = filas.map(f=> f.map(c=> `"${String(c).replace(/"/g,'""')}"`).join(",")).join("\r\n");
   const blob = new Blob(["﻿"+csv], { type: "text/csv;charset=utf-8;" });
@@ -1074,8 +1098,9 @@ async function recalcularProgresoObra(obraId, ventanas){
   const visibles = ventanas.filter(v => !v.aliasTo);
   const progreso = progresoVacio();
   visibles.forEach(v=> ETAPAS.forEach(e=>{ if(v.estado && v.estado[e]) progreso[e]++; }));
+  const numSinComposite = visibles.filter(v => v.llevaComposite === false).length;
   try{
-    await db.collection("obras").doc(obraId).update({ numVentanas: visibles.length, progreso });
+    await db.collection("obras").doc(obraId).update({ numVentanas: visibles.length, progreso, numSinComposite });
   }catch(e){ /* no crítico: si falla, se sigue mostrando con las cifras que hubiera */ }
 }
 
@@ -1157,8 +1182,13 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
       ventanasVisibles.forEach(v=> ETAPAS.forEach(e=>{ if(v.estado && v.estado[e]) c[e]++; }));
       return c;
     })();
+    const numSinCompositeResumen = obraData.progreso !== undefined
+      ? (obraData.numSinComposite || 0)
+      : ventanasVisibles.filter(v => v.llevaComposite === false).length;
     const checks = ETAPAS.reduce((n,e)=> n + (cuentas[e]||0), 0);
-    const pct = totalResumen ? Math.round((checks/(totalResumen*ETAPAS.length))*100) : 0;
+    // Composite es opcional: no cuenta contra el total de pasos posibles en las ventanas que no lo llevan.
+    const totalAplicableResumen = totalResumen*ETAPAS.length - numSinCompositeResumen;
+    const pct = totalAplicableResumen ? Math.round((checks/totalAplicableResumen)*100) : 0;
     // maxNumero usa TODAS las ventanas (incluidos los códigos QR ya vinculados a otra), para no
     // reutilizar nunca un número/etiqueta que ya existe en la base de datos y machacarlo sin querer.
     const maxNumero = ventanas.reduce((m,v)=> Math.max(m, v.numero||0), 0);
@@ -1223,7 +1253,7 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
     document.getElementById("btnExportPendientes").addEventListener("click", ()=> abrirExportarPendientes(obraId, obraData, ventanasVisibles));
     document.getElementById("btnExportIncidencias").addEventListener("click", ()=> abrirExportarIncidencias(obraId, obraData, ventanasVisibles));
     document.getElementById("btnExportEntregadas").addEventListener("click", ()=> abrirExportarEntregadas(obraId, obraData, ventanasVisibles));
-    document.getElementById("btnExportFotosNotas").addEventListener("click", ()=> generarPdfFotosNotas(obraData, ventanasVisibles));
+    document.getElementById("btnExportFotosNotas").addEventListener("click", ()=> abrirExportarFotosNotas(obraId, obraData, ventanasVisibles));
     document.getElementById("btnInformeObra").addEventListener("click", ()=> abrirInformeInstalacion({ tipo: "obra", obraId, obraNombre: obraData.nombre, ventanas: ventanasVisibles }));
     document.getElementById("btnEliminarObra").addEventListener("click", ()=> abrirConfirmarEliminarObra(obraId, obraData));
     document.getElementById("btnRecalcular").addEventListener("click", async ()=>{
@@ -1305,8 +1335,8 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
       cuerpoHtml = [...porCasa.entries()].map(([casaKey, lista])=>{
         const esSinCasa = casaKey === "__sin_casa__";
         const seleccion = esSinCasa && seleccionVarios;
-        const checks = lista.reduce((n,v)=> n + pasosCompletados(v.estado), 0);
-        const pctCasa = Math.round((checks/(lista.length*ETAPAS.length))*100);
+        const checks = lista.reduce((n,v)=> n + pasosCompletados(v.estado, etapasVentana(v)), 0);
+        const pctCasa = Math.round((checks/totalPasosAplicables(lista))*100);
         const porPlanta = new Map();
         lista.forEach(v=>{
           const plantaKey = v.planta || "__sin_planta__";
@@ -1543,7 +1573,7 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
             <img src="${esc(mapaActual.url)}" id="mapaImg" draggable="false" />
             ${marcadores.map(m=>{
               const info = estadoCasaParaMapa(m.casa, ventanas);
-              const colorClass = info.sinVentanas ? "mm-vacia" : (info.etapa ? "mm-"+info.etapa : "");
+              const colorClass = info.sinVentanas ? "mm-vacia" : (info.completa ? "mm-terminada" : "mm-pendiente");
               return `
               <div class="mapa-marker ${colorClass}" data-mid="${esc(m.id)}" data-casa="${esc(m.casa)}" style="left:${(m.x*100).toFixed(2)}%;top:${(m.y*100).toFixed(2)}%;">
                 ${info.incidenciaAbierta ? `<span class="mm-alerta">⚠️</span>` : ""}
@@ -1745,18 +1775,36 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
     const cont = document.getElementById("tabContent");
     cont.innerHTML = `<div class="empty">Cargando estadísticas…</div>`;
     db.collection("eventos").where("obraId","==",obraId).get().then(snap=>{
-      const eventos = snap.docs.map(d=>d.data());
-      const filas = agregarPorInstalador(eventos);
-      let filtro = "";
+      const todosEventos = snap.docs.map(d=>d.data());
+      if(!todosEventos.length){ cont.innerHTML = `<div class="card"><div class="empty">Todavía no hay actividad registrada en esta obra.</div></div>`; return; }
+      let filtro = "", periodo = "todo", desde = "", hasta = "";
 
       function pintarFilas(){
+        const { eventos: eventosPeriodo, label: labelPeriodo } = filtrarEventosPorPeriodo(todosEventos, periodo, desde, hasta);
+        const filas = agregarPorInstalador(eventosPeriodo);
         const norm = normalizarCabecera(filtro);
         const visibles = norm ? filas.filter(f=> normalizarCabecera(f.nombre).includes(norm)) : filas;
-        if(!filas.length){ cont.innerHTML = `<div class="card"><div class="empty">Todavía no hay actividad registrada en esta obra.</div></div>`; return; }
         cont.innerHTML = `
           <div class="card">
+            <div class="btn-row">
+              <label class="field" style="flex:1;min-width:150px;"><span>Periodo</span>
+                <select id="selPeriodoEstObra">
+                  <option value="todo" ${periodo==="todo"?"selected":""}>Todo</option>
+                  <option value="hoy" ${periodo==="hoy"?"selected":""}>Hoy</option>
+                  <option value="semana" ${periodo==="semana"?"selected":""}>Esta semana</option>
+                  <option value="mes" ${periodo==="mes"?"selected":""}>Este mes</option>
+                  <option value="rango" ${periodo==="rango"?"selected":""}>Rango de fechas…</option>
+                </select>
+              </label>
+            </div>
+            <div id="rangoFechasEstObra" style="display:${periodo==="rango"?"block":"none"};">
+              <div class="btn-row">
+                <label class="field"><span>Desde</span><input type="date" id="inpDesdeEstObra" value="${esc(desde)}" /></label>
+                <label class="field"><span>Hasta</span><input type="date" id="inpHastaEstObra" value="${esc(hasta)}" /></label>
+              </div>
+            </div>
             <label class="field"><span>Buscar instalador</span><input type="text" id="inpBuscarInstObra" value="${esc(filtro)}" placeholder="Nombre del instalador…" /></label>
-            ${!visibles.length ? `<div class="empty">Ningún instalador coincide con la búsqueda.</div>` : visibles.map(f=>`
+            ${!filas.length ? `<div class="empty">No hay actividad en ese periodo.</div>` : !visibles.length ? `<div class="empty">Ningún instalador coincide con la búsqueda.</div>` : visibles.map(f=>`
               <div class="userrow">
                 <div class="info"><h3>${esc(f.nombre)}</h3><p class="muted">Última actividad: ${fechaCorta(f.ultima)}</p></div>
                 <div class="stat-mini">
@@ -1770,6 +1818,11 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
             </div>
           </div>
         `;
+        document.getElementById("selPeriodoEstObra").addEventListener("change", (e)=>{ periodo = e.target.value; pintarFilas(); });
+        const inpDesde = document.getElementById("inpDesdeEstObra");
+        if(inpDesde) inpDesde.addEventListener("change", (e)=>{ desde = e.target.value; pintarFilas(); });
+        const inpHasta = document.getElementById("inpHastaEstObra");
+        if(inpHasta) inpHasta.addEventListener("change", (e)=>{ hasta = e.target.value; pintarFilas(); });
         const inp = document.getElementById("inpBuscarInstObra");
         if(inp){
           inp.addEventListener("input", ()=>{
@@ -1779,7 +1832,7 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
           });
         }
         const bPdf = document.getElementById("btnExpEstObraPdf");
-        if(bPdf) bPdf.addEventListener("click", ()=> generarPdfEstadisticas(obraData.nombre||"Obra", visibles));
+        if(bPdf) bPdf.addEventListener("click", ()=> generarPdfEstadisticas(obraData.nombre||"Obra", visibles, labelPeriodo));
         const bXls = document.getElementById("btnExpEstObraXls");
         if(bXls) bXls.addEventListener("click", ()=> generarExcelEstadisticas(`estadisticas_${slug(obraData.nombre)}`, visibles));
       }
@@ -1884,10 +1937,10 @@ function abrirImportarExcel(obraId, numeroInicial){
     <h3>Importar ventanas desde Excel/CSV</h3>
     <p class="muted" style="margin-bottom:10px;">
       El archivo debe tener una fila por ventana con columnas para <b>casa</b>, <b>planta</b>,
-      <b>número</b> (el que usáis en el plano, p.ej. "Código") y <b>referencia</b> (modelo, p.ej.
-      "Tipo ventana"). No hace falta que se llamen exactamente así ni que vayan en ese orden — la
-      app las reconoce solas. Si el archivo tiene varias hojas (por ejemplo una por planta), se
-      importan todas a la vez.
+      <b>número</b> (el que usáis en el plano, p.ej. "Código"), <b>referencia</b> (modelo, p.ej.
+      "Tipo ventana") y, si la tenéis, <b>ubicación</b> (interior/exterior/patio, etc.). No hace
+      falta que se llamen exactamente así ni que vayan en ese orden — la app las reconoce solas.
+      Si el archivo tiene varias hojas (por ejemplo una por planta), se importan todas a la vez.
     </p>
     <button class="link-btn" id="btnPlantilla" style="margin-bottom:14px;">⬇️ Descargar plantilla de ejemplo</button>
     <label class="field"><span>Archivo (.xlsx, .xls o .csv)</span><input type="file" id="inpArchivo" accept=".xlsx,.xls,.csv" /></label>
@@ -2059,6 +2112,9 @@ function renderVentana(obraId, ventanaId){
     if(v.asignada === false){ pintarAsignacion(v); return; }
     setTopbar(`${obraNombre} · ${etiquetaCorta(v)}`, descripcionVentana(v), true);
     const estado = v.estado || estadoVacio();
+    // Sin decidir todavía (ventanas de antes de este cambio incluidas) se trata como que sí la lleva.
+    const llevaComposite = v.llevaComposite !== false;
+    const etapasVent = etapasVentana(v);
     $app().innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:6px;">
         <button class="link-btn" id="btnVolverObra">⬅ Volver a la obra</button>
@@ -2074,13 +2130,28 @@ function renderVentana(obraId, ventanaId){
         </div>
         ${descripcionVentana(v) ? `<p class="muted" style="margin-top:2px;">${esc(descripcionVentana(v))}</p>` : ""}
         <p class="muted" style="margin-top:6px;">Marca cada etapa según avance la instalación</p>
+        <div class="field" style="margin-top:10px;margin-bottom:0;">
+          <span>¿Esta ventana lleva composite?</span>
+          <div class="btn-row" style="margin-top:4px;">
+            <button type="button" class="btn btn-sm ${llevaComposite ? "btn-primary" : "btn-outline"}" id="btnLlevaCompositeSi">Sí lleva</button>
+            <button type="button" class="btn btn-sm ${!llevaComposite ? "btn-primary" : "btn-outline"}" id="btnLlevaCompositeNo">No lleva</button>
+          </div>
+        </div>
         <div style="margin-top:14px;">
-          ${ETAPAS.map(e=>`
+          ${ETAPAS.map(e=>{
+            if(e === "composite" && !llevaComposite){
+              return `
+              <div class="etapa-row" style="opacity:.55;cursor:default;" data-noaplica="1">
+                <div class="chk">➖</div>
+                <div class="txt"><b>Composite</b><small>No aplica a esta ventana</small></div>
+              </div>`;
+            }
+            return `
             <div class="etapa-row ${estado[e]?"checked":""}" data-e="${e}">
               <div class="chk">${estado[e]?"✓":ETAPA_ICONO[e]}</div>
               <div class="txt"><b>${ETAPA_LABEL[e]}</b></div>
-            </div>
-          `).join("")}
+            </div>`;
+          }).join("")}
         </div>
       </div>
 
@@ -2176,8 +2247,19 @@ function renderVentana(obraId, ventanaId){
     `;
 
     document.querySelectorAll(".etapa-row").forEach(row=>{
-      row.addEventListener("click", ()=> toggleEtapa(obraId, obraNombre, vRef, ventanaId, etiquetaCorta(v), estado, row.dataset.e));
+      if(row.dataset.noaplica) return; // "Composite — no aplica": no es una etapa que se pueda marcar
+      row.addEventListener("click", ()=> toggleEtapa(obraId, obraNombre, vRef, ventanaId, etiquetaCorta(v), estado, row.dataset.e, etapasVent));
     });
+    async function cambiarLlevaComposite(nuevoValor){
+      if(nuevoValor === llevaComposite) return;
+      try{
+        await vRef.update({ llevaComposite: nuevoValor, actualizadoEn: firebase.firestore.FieldValue.serverTimestamp() });
+        // El contador de la obra (numSinComposite) se ajusta en +1/-1 al vuelo, igual que progreso.<etapa>.
+        db.collection("obras").doc(obraId).update({ numSinComposite: firebase.firestore.FieldValue.increment(nuevoValor ? -1 : 1) }).catch(()=>{});
+      }catch(err){ toast("Error guardando: " + err.message); }
+    }
+    document.getElementById("btnLlevaCompositeSi").addEventListener("click", ()=> cambiarLlevaComposite(true));
+    document.getElementById("btnLlevaCompositeNo").addEventListener("click", ()=> cambiarLlevaComposite(false));
     document.getElementById("btnVolverObra").addEventListener("click", ()=> navegar(`#/obra/${obraId}`));
     document.getElementById("btnVerFabricacion").addEventListener("click", ()=> navegar(`#/obra/${obraId}/planos`));
     document.getElementById("btnEditarAsignacion").addEventListener("click", ()=> abrirEditarAsignacion(obraId, ventanaId, vRef, v));
@@ -2322,6 +2404,7 @@ function formularioAsignacionHtml(v){
     <label class="field"><span>Planta</span><input type="text" id="inpAsigPlanta" value="${esc(v.planta||"")}" placeholder="Ej: 2" /></label>
     <label class="field"><span>Número de plano</span><input type="text" id="inpAsigNumero" value="${esc(v.numeroPlano||"")}" placeholder="Ej: 809" /></label>
     <label class="field"><span>Referencia / modelo</span><input type="text" id="inpAsigReferencia" value="${esc(v.referencia||"")}" placeholder="Ej: VAL 03D" /></label>
+    <label class="field"><span>Ubicación</span><input type="text" id="inpAsigUbicacion" value="${esc(v.ubicacion||"")}" placeholder="Ej: Exterior, Interior, Patio interior…" /></label>
   `;
 }
 
@@ -2362,13 +2445,16 @@ async function fusionarVentanas(obraId, origenId, origenData, destino){
 
   const estadoCombinado = {};
   ETAPAS.forEach(e => estadoCombinado[e] = !!((destino.estado && destino.estado[e]) || (origenData.estado && origenData.estado[e])));
+  // Si CUALQUIERA de las dos ventanas fusionadas llevaba composite, la resultante también lo lleva
+  // (no perder de vista que hace falta esa etapa solo porque la otra ventana no la necesitaba).
+  const llevaCompositeCombinado = !(destino.llevaComposite === false && origenData.llevaComposite === false);
   const notas = [...(destino.notas||[]), ...(origenData.notas||[])];
   const fotos = [...(destino.fotos||[]), ...(origenData.fotos||[])];
   const incidencias = [...(destino.incidencias||[]), ...(origenData.incidencias||[])];
   const entrega = destino.entrega || origenData.entrega || null;
 
   await destinoRef.update({
-    estado: estadoCombinado, notas, fotos, incidencias, entrega,
+    estado: estadoCombinado, llevaComposite: llevaCompositeCombinado, notas, fotos, incidencias, entrega,
     actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
   });
   await origenRef.update({
@@ -2397,6 +2483,7 @@ async function guardarVentanaNueva(obraId, ventanaId, vRef, datos){
   try{
     await vRef.update({
       casa: datos.casa, planta: datos.planta, numeroPlano: datos.numeroPlano, referencia: datos.referencia,
+      ubicacion: datos.ubicacion || "",
       asignada: true,
       actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
     });
@@ -2421,7 +2508,7 @@ function abrirSelectorVinculo(obraId, ventanaId, vRef, candidatos, datos, origen
       ${lista.map((d,i)=>{
         const v = d.data();
         return `<button class="btn btn-outline" data-idx="${i}" style="text-align:left;">
-          Casa ${esc(v.casa||"—")}${v.planta?", Planta "+esc(v.planta):""}${v.referencia?" · "+esc(v.referencia):""}
+          Casa ${esc(v.casa||"—")}${v.planta?", Planta "+esc(v.planta):""}${v.referencia?" · "+esc(v.referencia):""}${v.ubicacion?" · "+esc(v.ubicacion):""}
         </button>`;
       }).join("")}
     </div>
@@ -2446,8 +2533,9 @@ async function guardarAsignacion(obraId, ventanaId, vRef, permitirVincular, orig
   const planta = document.getElementById("inpAsigPlanta").value.trim();
   const numeroPlano = document.getElementById("inpAsigNumero").value.trim();
   const referencia = document.getElementById("inpAsigReferencia").value.trim();
+  const ubicacion = document.getElementById("inpAsigUbicacion").value.trim();
   if(!casa && !numeroPlano){ toast("Indica al menos la casa o el número de plano"); return; }
-  const datos = { casa, planta, numeroPlano, referencia };
+  const datos = { casa, planta, numeroPlano, referencia, ubicacion };
   const origen = origenData || {};
 
   const btn = document.getElementById("btnGuardarAsignacion");
@@ -2492,20 +2580,21 @@ async function guardarAsignacion(obraId, ventanaId, vRef, permitirVincular, orig
   abrirSelectorVinculo(obraId, ventanaId, vRef, candidatos, datos, origen);
 }
 
-async function toggleEtapa(obraId, obraNombre, vRef, ventanaId, ventanaEtiqueta, estadoActual, etapa){
-  const idx = ETAPAS.indexOf(etapa);
+async function toggleEtapa(obraId, obraNombre, vRef, ventanaId, ventanaEtiqueta, estadoActual, etapa, etapasVent){
+  const etapas = etapasVent || ETAPAS; // etapas que aplican a ESTA ventana (sin composite si no la lleva)
+  const idx = etapas.indexOf(etapa);
   const activar = !estadoActual[etapa];
   const nuevo = { ...estadoActual };
   if(activar){
     // marcar esta y todas las anteriores
-    for(let i=0;i<=idx;i++) nuevo[ETAPAS[i]] = true;
+    for(let i=0;i<=idx;i++) nuevo[etapas[i]] = true;
   } else {
     // desmarcar esta y todas las posteriores
-    for(let i=idx;i<ETAPAS.length;i++) nuevo[ETAPAS[i]] = false;
+    for(let i=idx;i<etapas.length;i++) nuevo[etapas[i]] = false;
   }
   // Un solo clic (p.ej. "Terminada") puede marcar en cascada varias etapas a la vez: registramos
   // un evento por cada etapa que realmente cambia, para que las estadísticas por instalador cuenten bien.
-  const cambiadas = ETAPAS.filter(e => nuevo[e] !== estadoActual[e]);
+  const cambiadas = etapas.filter(e => nuevo[e] !== estadoActual[e]);
   try{
     await vRef.update({ estado: nuevo, actualizadoEn: firebase.firestore.FieldValue.serverTimestamp() });
     cambiadas.forEach(e => registrarEvento(obraId, obraNombre, ventanaId, ventanaEtiqueta, e, nuevo[e]));
@@ -3060,7 +3149,7 @@ function generarExcelEstadisticas(nombreArchivo, filas){
   toast("Excel generado");
 }
 
-function generarPdfEstadisticas(titulo, filas){
+function generarPdfEstadisticas(titulo, filas, periodoLabel){
   if(!filas.length){ toast("No hay actividad que exportar"); return; }
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit: "mm", format: "a4" });
@@ -3069,6 +3158,7 @@ function generarPdfEstadisticas(titulo, filas){
   doc.setFontSize(16); doc.setTextColor(20);
   doc.text(`Estadísticas por instalador — ${titulo}`, margen, y); y += 6;
   doc.setFontSize(10); doc.setTextColor(120);
+  if(periodoLabel && periodoLabel !== "Todo"){ doc.text(`Periodo: ${periodoLabel}`, margen, y); y += 5; }
   doc.text(`Generado: ${new Date().toLocaleString("es-ES")}`, margen, y); y += 10;
   doc.setDrawColor(200); doc.line(margen, y, 210-margen, y); y += 8;
 
@@ -3088,19 +3178,39 @@ function generarPdfEstadisticas(titulo, filas){
 function renderEstadisticas(){
   $app().innerHTML = `<div class="empty">Cargando estadísticas…</div>`;
   db.collection("eventos").orderBy("fecha","desc").limit(3000).get().then(snap=>{
-    const eventos = snap.docs.map(d=>d.data());
-    const filas = agregarPorInstalador(eventos);
-    let filtro = "";
+    const todosEventos = snap.docs.map(d=>d.data());
+    let filtro = "", periodo = "todo", desde = "", hasta = "";
 
     function pintar(){
+      const { eventos: eventosPeriodo, label: labelPeriodo } = filtrarEventosPorPeriodo(todosEventos, periodo, desde, hasta);
+      const filas = agregarPorInstalador(eventosPeriodo);
       const norm = normalizarCabecera(filtro);
       const visibles = norm ? filas.filter(f=> normalizarCabecera(f.nombre).includes(norm)) : filas;
       $app().innerHTML = `
         <div class="card">
           <div class="section-title">Resumen por instalador</div>
-          ${filas.length ? `<label class="field"><span>Buscar instalador</span><input type="text" id="inpBuscarInstalador" value="${esc(filtro)}" placeholder="Nombre del instalador…" /></label>` : ""}
+          ${todosEventos.length ? `
+            <div class="btn-row">
+              <label class="field" style="flex:1;min-width:150px;"><span>Periodo</span>
+                <select id="selPeriodoEst">
+                  <option value="todo" ${periodo==="todo"?"selected":""}>Todo</option>
+                  <option value="hoy" ${periodo==="hoy"?"selected":""}>Hoy</option>
+                  <option value="semana" ${periodo==="semana"?"selected":""}>Esta semana</option>
+                  <option value="mes" ${periodo==="mes"?"selected":""}>Este mes</option>
+                  <option value="rango" ${periodo==="rango"?"selected":""}>Rango de fechas…</option>
+                </select>
+              </label>
+            </div>
+            <div id="rangoFechasEst" style="display:${periodo==="rango"?"block":"none"};">
+              <div class="btn-row">
+                <label class="field"><span>Desde</span><input type="date" id="inpDesdeEst" value="${esc(desde)}" /></label>
+                <label class="field"><span>Hasta</span><input type="date" id="inpHastaEst" value="${esc(hasta)}" /></label>
+              </div>
+            </div>
+            <label class="field"><span>Buscar instalador</span><input type="text" id="inpBuscarInstalador" value="${esc(filtro)}" placeholder="Nombre del instalador…" /></label>
+          ` : ""}
           <p class="muted" style="margin-bottom:10px;">🪟 Instalada · 🧴 Sellada · 🔷 Acristalada · 🧱 Composite · ✅ Terminada</p>
-          ${!visibles.length ? `<div class="empty">${filas.length ? "Ningún instalador coincide con la búsqueda." : "Todavía no hay actividad registrada."}</div>` : visibles.map(f=>`
+          ${!visibles.length ? `<div class="empty">${!todosEventos.length ? "Todavía no hay actividad registrada." : filas.length ? "Ningún instalador coincide con la búsqueda." : "No hay actividad en ese periodo."}</div>` : visibles.map(f=>`
             <div class="userrow">
               <div class="info"><h3>${esc(f.nombre)}</h3><p class="muted">Última actividad: ${fechaCorta(f.ultima)}</p></div>
               <div class="stat-mini">
@@ -3108,7 +3218,7 @@ function renderEstadisticas(){
               </div>
             </div>
           `).join("")}
-          ${filas.length ? `
+          ${todosEventos.length ? `
             <div class="btn-row" style="margin-top:14px;">
               <button class="btn btn-secondary" id="btnExpEstPdf">🧾 Exportar PDF</button>
               <button class="btn btn-secondary" id="btnExpEstXls">📊 Exportar Excel</button>
@@ -3116,6 +3226,12 @@ function renderEstadisticas(){
           ` : ""}
         </div>
       `;
+      const selPeriodo = document.getElementById("selPeriodoEst");
+      if(selPeriodo) selPeriodo.addEventListener("change", (e)=>{ periodo = e.target.value; pintar(); });
+      const inpDesde = document.getElementById("inpDesdeEst");
+      if(inpDesde) inpDesde.addEventListener("change", (e)=>{ desde = e.target.value; pintar(); });
+      const inpHasta = document.getElementById("inpHastaEst");
+      if(inpHasta) inpHasta.addEventListener("change", (e)=>{ hasta = e.target.value; pintar(); });
       const inp = document.getElementById("inpBuscarInstalador");
       if(inp){
         inp.addEventListener("input", ()=>{
@@ -3125,7 +3241,7 @@ function renderEstadisticas(){
         });
       }
       const bPdf = document.getElementById("btnExpEstPdf");
-      if(bPdf) bPdf.addEventListener("click", ()=> generarPdfEstadisticas("Todas las obras", visibles));
+      if(bPdf) bPdf.addEventListener("click", ()=> generarPdfEstadisticas("Todas las obras", visibles, labelPeriodo));
       const bXls = document.getElementById("btnExpEstXls");
       if(bXls) bXls.addEventListener("click", ()=> generarExcelEstadisticas("estadisticas_instaladores", visibles));
     }
@@ -3266,45 +3382,55 @@ function generarQrDataUrl(texto, size){
   return canvas ? canvas.toDataURL("image/png") : null;
 }
 
+// Acorta "texto" (añadiendo "…") hasta que quepa en maxAncho (mm) con la fuente que tenga el doc
+// puesta en ese momento — así el texto nunca se sale de su etiqueta ni pisa la de al lado, sea cual
+// sea el idioma, la fuente o el tamaño usados. Hay que llamarla DESPUÉS de setFont/setFontSize.
+function truncarAncho(doc, texto, maxAncho){
+  const t0 = String(texto||"");
+  if(!t0) return "";
+  if(doc.getTextWidth(t0) <= maxAncho) return t0;
+  let t = t0;
+  while(t.length > 1 && doc.getTextWidth(t + "…") > maxAncho) t = t.slice(0, -1);
+  return t.length < t0.length ? t + "…" : t;
+}
+
+// Hoja de etiquetas precortadas A4: 5 columnas x 9 filas (45 etiquetas/hoja) de 42 x 30mm exactos,
+// sin margen lateral (llegan borde a borde de la hoja) y con margen superior/inferior simétrico de
+// ~13.5mm — mismas medidas exactas que la plantilla de Ramon (454230X45E, Suministros Bonaldi),
+// para que coincidan con los folios ya precortados que va a comprar.
+const ETIQUETA_MARGEN_X = 0, ETIQUETA_MARGEN_Y = 13.4995;
+const ETIQUETA_ANCHO = 42, ETIQUETA_ALTO = 30, ETIQUETA_FILAS = 9, ETIQUETA_COLS = 5;
+
 async function generarPdfQr(obraId, obraData, ventanas){
   if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
   if(!ventanas.length){ toast("Esta obra no tiene ventanas"); return; }
   toast("Generando PDF de etiquetas…");
   const lista = ordenarVentanas(ventanas); // agrupa visualmente por casa/planta al imprimir
-  const avanzado = lista.some(tieneDatosAvanzados);
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit: "mm", format: "a4" });
-  const margen = 12, cols = 3, rows = avanzado ? 3 : 4, celda = avanzado ? 76 : 62, qrSize = 46;
-  const anchoUtil = 210 - margen*2;
-  const gapX = (anchoUtil - cols*qrSize) / (cols-1 || 1);
-  let col = 0, row = 0;
+  const qrSize = 18, padSup = 2, porHoja = ETIQUETA_COLS * ETIQUETA_FILAS;
 
   for(let i=0;i<lista.length;i++){
     const v = lista[i];
-    if(row === rows){ doc.addPage(); row = 0; col = 0; }
-    const x = margen + col*(qrSize+gapX);
-    const y = margen + row*celda;
-    const dataUrl = generarQrDataUrl(urlVentana(obraId, v.id), 300);
-    if(dataUrl){ doc.addImage(dataUrl, "PNG", x, y, qrSize, qrSize); }
-    doc.setDrawColor(210); doc.rect(x-1, y-1, qrSize+2, qrSize+2);
-    doc.setFontSize(11); doc.setTextColor(20);
-    doc.text(String(etiquetaCorta(v)), x + qrSize/2, y + qrSize + 6, { align: "center" });
-    if(avanzado){
-      const linea2 = [v.casa && `Casa ${v.casa}`, v.planta && `Planta ${v.planta}`].filter(Boolean).join(" · ")
-        || String(obraData.nombre||"").slice(0,26);
-      doc.setFontSize(8); doc.setTextColor(90);
-      doc.text(linea2.slice(0,32), x + qrSize/2, y + qrSize + 10.5, { align: "center" });
-      if(v.referencia){
-        doc.setFontSize(7.5); doc.setTextColor(140);
-        doc.text(String(v.referencia).slice(0,34), x + qrSize/2, y + qrSize + 14.5, { align: "center" });
-      }
-    } else {
-      doc.setFontSize(8); doc.setTextColor(120);
-      doc.text(String(obraData.nombre||"").slice(0,26), x + qrSize/2, y + qrSize + 10.5, { align: "center" });
-    }
+    const enHoja = i % porHoja;
+    if(i > 0 && enHoja === 0) doc.addPage();
+    const col = enHoja % ETIQUETA_COLS, fila = Math.floor(enHoja / ETIQUETA_COLS);
+    const x = ETIQUETA_MARGEN_X + col*ETIQUETA_ANCHO, y = ETIQUETA_MARGEN_Y + fila*ETIQUETA_ALTO;
+    const centroX = x + ETIQUETA_ANCHO/2;
 
-    col++;
-    if(col === cols){ col = 0; row++; }
+    const qrX = x + (ETIQUETA_ANCHO - qrSize)/2, qrY = y + padSup;
+    const dataUrl = generarQrDataUrl(urlVentana(obraId, v.id), 220);
+    if(dataUrl){ doc.addImage(dataUrl, "PNG", qrX, qrY, qrSize, qrSize); }
+
+    const textAncho = ETIQUETA_ANCHO - 2; // 1mm de aire a cada lado dentro de la etiqueta
+    const casaPlanta = [v.casa && `Casa ${v.casa}`, v.planta && `Pl ${v.planta}`].filter(Boolean).join(" · ");
+    const linea2 = [casaPlanta, v.referencia, v.ubicacion].filter(Boolean).join(" · ") || String(obraData.nombre||"");
+
+    doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.setTextColor(20);
+    doc.text(truncarAncho(doc, etiquetaCorta(v), textAncho), centroX, y + padSup + qrSize + 3.2, { align: "center" });
+    doc.setFont("helvetica", "normal"); doc.setFontSize(6.8); doc.setTextColor(90);
+    doc.text(truncarAncho(doc, linea2, textAncho), centroX, y + padSup + qrSize + 7.0, { align: "center" });
+
     if(i % 15 === 0) await new Promise(r=> setTimeout(r, 0)); // ceder el hilo de UI
   }
   doc.save(`QR_${slug(obraData.nombre)}.pdf`);
@@ -3357,7 +3483,7 @@ async function generarPdfPendientes(obraId, obraData, ventanas, ambito){
   doc.text(`${obraData.direccion||""}`, margen, y); y += 5;
   doc.text(`Generado: ${new Date().toLocaleString("es-ES")}`, margen, y); y += 10;
 
-  const pendientes = ordenarVentanas(ventanas.filter(v => pasosCompletados(v.estado) < ETAPAS.length));
+  const pendientes = ordenarVentanas(ventanas.filter(v => pasosCompletados(v.estado, etapasVentana(v)) < etapasVentana(v).length));
   const total = ventanas.length, terminadas = total - pendientes.length;
 
   doc.setFontSize(11); doc.setTextColor(20);
@@ -3382,8 +3508,8 @@ async function generarPdfPendientes(obraId, obraData, ventanas, ambito){
         doc.setDrawColor(225); doc.line(margen, y-3.5, 210-margen, y-3.5);
       }
       if(y > 280){ doc.addPage(); y = margen; casaActual = null; }
-      const faltan = ETAPAS.filter(e => !(v.estado && v.estado[e]));
-      const detalle = [v.planta && `Planta ${v.planta}`, v.referencia].filter(Boolean).join(" · ");
+      const faltan = etapasVentana(v).filter(e => !(v.estado && v.estado[e]));
+      const detalle = [v.planta && `Planta ${v.planta}`, v.referencia, v.ubicacion].filter(Boolean).join(" · ");
       const linea = `${etiquetaCorta(v)}${detalle ? " ("+detalle+")" : ""}  —  Falta: ${faltan.map(e=>ETAPA_LABEL[e]).join(", ")}`;
       doc.setFontSize(10.5); doc.setTextColor(20);
       doc.text(linea, margen + (agrupado?4:0), y);
@@ -3401,21 +3527,22 @@ function filaExcelVentana(v){
     Casa: v.casa || "",
     Planta: v.planta || "",
     Referencia: v.referencia || "",
+    Ubicación: v.ubicacion || "",
     Instalada: v.estado && v.estado.instalada ? "Sí" : "No",
     Sellada: v.estado && v.estado.sellada ? "Sí" : "No",
     Acristalada: v.estado && v.estado.acristalada ? "Sí" : "No",
-    Composite: v.estado && v.estado.composite ? "Sí" : "No",
+    Composite: v.llevaComposite === false ? "No aplica" : (v.estado && v.estado.composite ? "Sí" : "No"),
     Terminada: v.estado && v.estado.terminada ? "Sí" : "No"
   };
 }
 
 function generarExcelPendientes(obraData, ventanas, ambito){
   if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
-  const pendientes = ordenarVentanas(ventanas.filter(v => pasosCompletados(v.estado) < ETAPAS.length));
+  const pendientes = ordenarVentanas(ventanas.filter(v => pasosCompletados(v.estado, etapasVentana(v)) < etapasVentana(v).length));
   if(!pendientes.length){ toast("No hay ventanas pendientes en ese ámbito"); return; }
   const rows = pendientes.map(v=>({
     ...filaExcelVentana(v),
-    Falta: ETAPAS.filter(e=>!(v.estado && v.estado[e])).map(e=>ETAPA_LABEL[e]).join(", ")
+    Falta: etapasVentana(v).filter(e=>!(v.estado && v.estado[e])).map(e=>ETAPA_LABEL[e]).join(", ")
   }));
   const ws = XLSX.utils.json_to_sheet(rows);
   const wb = XLSX.utils.book_new();
@@ -3578,7 +3705,64 @@ function generarExcelIncidencias(obraData, ventanas){
 // PDF con las fotos y anotaciones de cada ventana, agrupado por casa/ventana (igual que el resto
 // de exportaciones), para tener un documento único en vez de tener que mirarlas una a una en la
 // pestaña "Fotos y notas".
-async function generarPdfFotosNotas(obraData, ventanas){
+// Modal previo al PDF de fotos y notas: por defecto exporta TODO lo que haya en la obra, o se
+// puede acotar a un periodo (hoy, esta semana, este mes, o un rango de fechas concreto) — el
+// filtro se aplica a la fecha de cada foto/nota individual, no a la ventana en conjunto.
+function abrirExportarFotosNotas(obraId, obraData, ventanas){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  const hayContenido = ventanas.some(v => (v.notas||[]).length || (v.fotos||[]).length);
+  if(!hayContenido){ toast("Esta obra todavía no tiene fotos ni anotaciones"); return; }
+  openModal(`
+    <h3>Exportar fotos y notas</h3>
+    <label class="field"><span>Periodo</span>
+      <select id="selPeriodoFotosNotas">
+        <option value="todo" selected>Todo</option>
+        <option value="hoy">Hoy</option>
+        <option value="semana">Esta semana</option>
+        <option value="mes">Este mes</option>
+        <option value="rango">Rango de fechas…</option>
+      </select>
+    </label>
+    <div id="rangoFechasFotosNotas" style="display:none;">
+      <div class="btn-row">
+        <label class="field"><span>Desde</span><input type="date" id="inpDesdeFotosNotas" /></label>
+        <label class="field"><span>Hasta</span><input type="date" id="inpHastaFotosNotas" /></label>
+      </div>
+    </div>
+    <button class="btn btn-primary btn-block" id="btnGenerarFotosNotas" style="margin-top:10px;">📷 Exportar PDF</button>
+  `);
+  const selPeriodo = document.getElementById("selPeriodoFotosNotas");
+  selPeriodo.addEventListener("change", ()=>{
+    document.getElementById("rangoFechasFotosNotas").style.display = selPeriodo.value === "rango" ? "block" : "none";
+  });
+  document.getElementById("btnGenerarFotosNotas").addEventListener("click", async ()=>{
+    const periodo = selPeriodo.value;
+    const desde = document.getElementById("inpDesdeFotosNotas").value;
+    const hasta = document.getElementById("inpHastaFotosNotas").value;
+    if(periodo === "rango" && !desde && !hasta){ toast("Indica al menos una fecha"); return; }
+    closeModal();
+    if(periodo === "todo"){
+      await generarPdfFotosNotas(obraData, ventanas);
+      return;
+    }
+    const { ini, fin, label } = calcularRangoInforme(periodo, desde, hasta);
+    const filtradas = filtrarVentanasFotosNotasPorRango(ventanas, ini, fin);
+    if(!filtradas.some(v => (v.notas||[]).length || (v.fotos||[]).length)){ toast("No hay fotos ni anotaciones en ese periodo"); return; }
+    await generarPdfFotosNotas(obraData, filtradas, label);
+  });
+}
+
+// Devuelve las mismas ventanas pero con solo las notas y fotos cuya fecha cae en [ini, fin).
+function filtrarVentanasFotosNotasPorRango(ventanas, ini, fin){
+  const dentro = (fecha)=> fecha && new Date(fecha).getTime() >= ini.getTime() && new Date(fecha).getTime() < fin.getTime();
+  return ventanas.map(v => ({
+    ...v,
+    notas: (v.notas||[]).filter(n => dentro(n.fecha)),
+    fotos: (v.fotos||[]).filter(f => dentro(f.fecha))
+  }));
+}
+
+async function generarPdfFotosNotas(obraData, ventanas, periodoLabel){
   if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
   const conContenido = ordenarVentanas(ventanas.filter(v => (v.notas||[]).length || (v.fotos||[]).length));
   if(!conContenido.length){ toast("Esta obra todavía no tiene fotos ni anotaciones"); return; }
@@ -3592,6 +3776,7 @@ async function generarPdfFotosNotas(obraData, ventanas){
   doc.text(`Fotos y notas — ${obraData.nombre||""}`, margen, y); y += 6;
   doc.setFontSize(10); doc.setTextColor(120);
   doc.text(`${obraData.direccion||""}`, margen, y); y += 5;
+  if(periodoLabel){ doc.text(periodoLabel, margen, y); y += 5; }
   doc.text(`Generado: ${new Date().toLocaleString("es-ES")}`, margen, y); y += 10;
 
   const totalNotas = conContenido.reduce((n,v)=> n + (v.notas||[]).length, 0);
@@ -3778,6 +3963,15 @@ function calcularRangoInforme(periodo, desde, hasta){
   const fin = new Date(finBase); fin.setDate(fin.getDate()+1);
   const finLabel = new Date(fin.getTime()-1);
   return { ini, fin, label: `Del ${ini.toLocaleDateString("es-ES")} al ${finLabel.toLocaleDateString("es-ES")}` };
+}
+
+// Acota una lista de eventos (etapas marcadas) a un periodo — usado por las estadísticas por
+// instalador, tanto de una obra como de todas juntas. periodo "todo" no filtra nada.
+function filtrarEventosPorPeriodo(eventos, periodo, desde, hasta){
+  if(periodo === "todo") return { eventos, label: "Todo" };
+  const { ini, fin, label } = calcularRangoInforme(periodo, desde, hasta);
+  const iniIso = ini.toISOString(), finIso = fin.toISOString();
+  return { eventos: eventos.filter(ev => ev.fecha && ev.fecha >= iniIso && ev.fecha < finIso), label };
 }
 
 // Clave de agrupación por día en hora local ("YYYY-MM-DD"), para no depender de la hora UTC
