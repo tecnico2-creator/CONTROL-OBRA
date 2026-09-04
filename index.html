@@ -276,6 +276,7 @@
 
 <div id="topbar">
   <button class="back" id="btnBack" style="display:none;">←</button>
+  <button class="icon-btn" id="btnHome" title="Todas las obras" style="display:none;">🏠</button>
   <div class="titulo">
     <h1 id="tbTitulo">Control de Instalación</h1>
     <div class="sub" id="tbSub"></div>
@@ -564,6 +565,7 @@ function setTopbar(titulo, sub, mostrarBack){
   document.getElementById("tbTitulo").textContent = titulo;
   document.getElementById("tbSub").textContent = sub || "";
   document.getElementById("btnBack").style.display = mostrarBack ? "flex" : "none";
+  document.getElementById("btnHome").style.display = mostrarBack ? "flex" : "none";
 }
 
 function limpiarListeners(){
@@ -646,6 +648,7 @@ function pintarBellDot(){
 document.getElementById("btnBack").addEventListener("click", ()=>{
   history.length > 1 ? history.back() : navegar("#/");
 });
+document.getElementById("btnHome").addEventListener("click", ()=> navegar("#/"));
 document.getElementById("btnNotif").addEventListener("click", abrirNotificaciones);
 document.getElementById("btnPerfil").addEventListener("click", ()=>{
   if(!currentUserData) return;
