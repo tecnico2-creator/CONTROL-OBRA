@@ -998,13 +998,23 @@ async function crearVentanasGenericas(obraId, cantidad, numeroInicial){
   return creadas;
 }
 
-// Crea ventanas a partir de filas ya normalizadas {casa, planta, numero, referencia}, importadas de un Excel/CSV.
-// numeroInicial es el "numero" interno (para ordenar) a partir del cual seguir contando en esta obra.
+// Crea (o actualiza) ventanas a partir de filas ya normalizadas {casa, planta, numero, referencia,
+// ubicacion}, importadas de un Excel/CSV. numeroInicial es el "numero" interno (para ordenar) a
+// partir del cual seguir contando las ventanas NUEVAS de esta obra.
+//
+// El identificador de cada ventana es siempre el mismo slug de casa+planta+número, así que
+// reimportar el mismo Excel (con correcciones o filas añadidas) es seguro: una fila que coincide
+// con una ventana que ya existe NO crea un duplicado ni pisa su avance — solo le actualiza la
+// identificación (casa/planta/referencia/ubicación) que traiga el Excel. Solo las filas realmente
+// nuevas crean una ventana nueva. Devuelve cuántas de cada tipo, para poder avisar al usuario.
 async function crearVentanasDesdeFilas(obraId, filas, numeroInicial){
   const obraRef = db.collection("obras").doc(obraId);
+  const snapExistentes = await obraRef.collection("ventanas").get();
+  const existentesPorId = new Set(snapExistentes.docs.map(d => d.id));
+
   const idsUsados = new Set();
   let batch = db.batch();
-  let count = 0;
+  let count = 0, creadas = 0, actualizadas = 0;
   let n = numeroInicial;
   for(const fila of filas){
     const base = slug([fila.casa, fila.planta, fila.numero].filter(Boolean).join("-")) || `ventana-${n}`;
@@ -1012,28 +1022,43 @@ async function crearVentanasDesdeFilas(obraId, filas, numeroInicial){
     while(idsUsados.has(id)){ id = `${base}-${sufijo}`; sufijo++; }
     idsUsados.add(id);
     const ref = obraRef.collection("ventanas").doc(id);
-    batch.set(ref, {
-      numero: n,
-      etiqueta: (fila.numero && String(fila.numero).trim()) || etiquetaVentana(n),
-      casa: fila.casa || "",
-      planta: fila.planta || "",
-      numeroPlano: fila.numero || "",
-      referencia: fila.referencia || "",
-      ubicacion: fila.ubicacion || "",
-      asignada: true,
-      estado: estadoVacio(),
-      notas: [],
-      fotos: [],
-      incidencias: [],
-      entrega: null,
-      actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
-    });
-    n++;
+
+    if(existentesPorId.has(id)){
+      // Ya existía (misma casa+planta+número): se actualiza solo la identificación que trae el
+      // Excel — nunca el estado, fotos, notas, incidencias, entrega o composite ya guardados.
+      const cambios = { actualizadoEn: firebase.firestore.FieldValue.serverTimestamp() };
+      if(fila.casa) cambios.casa = fila.casa;
+      if(fila.planta) cambios.planta = fila.planta;
+      if(fila.numero) cambios.numeroPlano = fila.numero;
+      if(fila.referencia) cambios.referencia = fila.referencia;
+      if(fila.ubicacion) cambios.ubicacion = fila.ubicacion;
+      batch.update(ref, cambios);
+      actualizadas++;
+    } else {
+      batch.set(ref, {
+        numero: n,
+        etiqueta: (fila.numero && String(fila.numero).trim()) || etiquetaVentana(n),
+        casa: fila.casa || "",
+        planta: fila.planta || "",
+        numeroPlano: fila.numero || "",
+        referencia: fila.referencia || "",
+        ubicacion: fila.ubicacion || "",
+        asignada: true,
+        estado: estadoVacio(),
+        notas: [],
+        fotos: [],
+        incidencias: [],
+        entrega: null,
+        actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      n++;
+      creadas++;
+    }
     count++;
     if(count % 400 === 0){ await batch.commit(); batch = db.batch(); }
   }
   await batch.commit();
-  return count;
+  return { creadas, actualizadas };
 }
 
 // Lee un archivo .xlsx/.xls/.csv y devuelve filas normalizadas {casa, planta, numero, referencia}.
@@ -1941,6 +1966,10 @@ function abrirImportarExcel(obraId, numeroInicial){
       "Tipo ventana") y, si la tenéis, <b>ubicación</b> (interior/exterior/patio, etc.). No hace
       falta que se llamen exactamente así ni que vayan en ese orden — la app las reconoce solas.
       Si el archivo tiene varias hojas (por ejemplo una por planta), se importan todas a la vez.
+      Puedes reimportar el mismo Excel más adelante (por ejemplo con correcciones o filas nuevas)
+      sin miedo: las ventanas que coincidan en casa+planta+número no se duplican ni pierden su
+      avance, solo se les actualiza la casa/planta/referencia/ubicación — solo se crean ventanas
+      nuevas para las filas que de verdad no existían todavía.
     </p>
     <button class="link-btn" id="btnPlantilla" style="margin-bottom:14px;">⬇️ Descargar plantilla de ejemplo</button>
     <label class="field"><span>Archivo (.xlsx, .xls o .csv)</span><input type="file" id="inpArchivo" accept=".xlsx,.xls,.csv" /></label>
@@ -1977,9 +2006,11 @@ function abrirImportarExcel(obraId, numeroInicial){
     const btn = document.getElementById("btnImportar");
     btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Importando…`;
     try{
-      const n = await crearVentanasDesdeFilas(obraId, filasListas, numeroInicial);
-      await db.collection("obras").doc(obraId).update({ numVentanas: firebase.firestore.FieldValue.increment(n) });
-      toast(`${n} ventanas importadas`);
+      const { creadas, actualizadas } = await crearVentanasDesdeFilas(obraId, filasListas, numeroInicial);
+      if(creadas) await db.collection("obras").doc(obraId).update({ numVentanas: firebase.firestore.FieldValue.increment(creadas) });
+      toast(actualizadas
+        ? `${creadas} ventanas nuevas, ${actualizadas} actualizadas (ya existían)`
+        : `${creadas} ventanas importadas`);
       closeModal();
     }catch(err){
       toast("Error importando: " + err.message);
