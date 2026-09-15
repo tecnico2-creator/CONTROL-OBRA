@@ -883,7 +883,7 @@ function renderListaObras(){
         <div class="avatar">${esc((obra.nombre||"?").slice(0,2).toUpperCase())}</div>
         <div class="info">
           <h3>${esc(obra.nombre||"Sin nombre")}</h3>
-          <p>${esc(obra.direccion||"")}${obra.direccion ? " · " : ""}${total} ventanas · ${terminadas} terminadas</p>
+          <p>${esc(obra.direccion||"")}${obra.direccion ? " · " : ""}${total} ventanas · ${terminadas} terminadas${obra.numSinAsignar ? ` · ${obra.numSinAsignar} sin asignar` : ""}</p>
         </div>
         <div class="pct">${pct}%</div>
       </div>
@@ -926,6 +926,9 @@ function renderNuevaObra(){
         // Cuántas ventanas de la obra NO llevan composite (etapa opcional) — hace falta para calcular
         // bien el % completado sin tener que releer todas las ventanas (ver etapasVentana más abajo).
         numSinComposite: 0,
+        // Cuántos códigos QR genéricos hay todavía sin usar (asignada:false) — no cuentan en
+        // numVentanas ni en el % completado, solo se muestran aparte (ver recalcularProgresoObra).
+        numSinAsignar: 0,
         creadoEn: firebase.firestore.FieldValue.serverTimestamp(),
         creadoPor: nombreUsuario() || "Oficina"
       });
@@ -1124,11 +1127,18 @@ function descargarPlantillaCsv(){
 // un botón manual de "recalcular" si alguna vez las cifras se desajustan por cualquier motivo.
 async function recalcularProgresoObra(obraId, ventanas){
   const visibles = ventanas.filter(v => !v.aliasTo);
+  // Los códigos QR genéricos todavía sin usar (asignada:false, ver crearVentanasGenericas) no
+  // representan trabajo real todavía — se generan a menudo por adelantado y pueden tardar en
+  // repartirse en obra, así que NO cuentan en numVentanas ni en el % completado (solo se muestran
+  // aparte, como "sin asignar"). En cuanto se asignan (o se vinculan a una ventana ya existente)
+  // pasan a contar con normalidad, como cualquier otra.
+  const contables = visibles.filter(v => v.asignada !== false);
+  const numSinAsignar = visibles.length - contables.length;
   const progreso = progresoVacio();
-  visibles.forEach(v=> ETAPAS.forEach(e=>{ if(v.estado && v.estado[e]) progreso[e]++; }));
-  const numSinComposite = visibles.filter(v => v.llevaComposite === false).length;
+  contables.forEach(v=> ETAPAS.forEach(e=>{ if(v.estado && v.estado[e]) progreso[e]++; }));
+  const numSinComposite = contables.filter(v => v.llevaComposite === false).length;
   try{
-    await db.collection("obras").doc(obraId).update({ numVentanas: visibles.length, progreso, numSinComposite });
+    await db.collection("obras").doc(obraId).update({ numVentanas: contables.length, numSinAsignar, progreso, numSinComposite });
   }catch(e){ /* no crítico: si falla, se sigue mostrando con las cifras que hubiera */ }
 }
 
@@ -1204,15 +1214,21 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
     // (obraData.progreso / numVentanas), no releyendo las ventanas — así la cifra aparece al
     // instante y no depende de tener que recorrer toda la lista cada vez. Si una obra todavía no
     // tiene ese resumen (se está calculando solo, ver más abajo), se usa la cuenta local mientras tanto.
-    const totalResumen = obraData.progreso !== undefined ? (obraData.numVentanas || 0) : total;
+    // En ambos casos, los códigos QR genéricos todavía sin usar (asignada:false) quedan fuera: no
+    // cuentan como trabajo pendiente en el % (ver recalcularProgresoObra).
+    const ventanasContables = ventanasVisibles.filter(v => v.asignada !== false);
+    const totalResumen = obraData.progreso !== undefined ? (obraData.numVentanas || 0) : ventanasContables.length;
+    const numSinAsignarResumen = obraData.progreso !== undefined
+      ? (obraData.numSinAsignar || 0)
+      : (ventanasVisibles.length - ventanasContables.length);
     const cuentas = obraData.progreso !== undefined ? obraData.progreso : (()=>{
       const c = {instalada:0,sellada:0,acristalada:0,composite:0,terminada:0};
-      ventanasVisibles.forEach(v=> ETAPAS.forEach(e=>{ if(v.estado && v.estado[e]) c[e]++; }));
+      ventanasContables.forEach(v=> ETAPAS.forEach(e=>{ if(v.estado && v.estado[e]) c[e]++; }));
       return c;
     })();
     const numSinCompositeResumen = obraData.progreso !== undefined
       ? (obraData.numSinComposite || 0)
-      : ventanasVisibles.filter(v => v.llevaComposite === false).length;
+      : ventanasContables.filter(v => v.llevaComposite === false).length;
     const checks = ETAPAS.reduce((n,e)=> n + (cuentas[e]||0), 0);
     // Composite es opcional: no cuenta contra el total de pasos posibles en las ventanas que no lo llevan.
     const totalAplicableResumen = totalResumen*ETAPAS.length - numSinCompositeResumen;
@@ -1226,7 +1242,7 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
         <div style="display:flex;justify-content:space-between;align-items:flex-start;">
           <div>
             <div class="pctbig">${pct}%</div>
-            <div class="muted">completado · ${totalResumen} ventanas</div>
+            <div class="muted">completado · ${totalResumen} ventanas${numSinAsignarResumen ? ` · ${numSinAsignarResumen} sin asignar (no cuentan en el %)` : ""}</div>
           </div>
           <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;">
             <button class="btn btn-secondary btn-sm" id="btnEliminarObra">🗑️ Eliminar obra</button>
@@ -1513,16 +1529,29 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
     const planosSolo = planos.filter(p => (p.categoria||"plano") === "plano");
     const fabricacionSolo = planos.filter(p => p.categoria === "fabricacion");
 
+    // Ventanas reales (ni alias, ni QR genéricos todavía sin usar) que ningún parte de fabricación
+    // menciona todavía en sus "códigos" — para que, al ir asignando documentos, sea fácil ver de un
+    // vistazo qué queda por cubrir sin tener que comparar la lista a mano.
+    const ventanasSinFabricacion = admin ? ordenarVentanas(
+      ventanas.filter(v => !v.aliasTo && v.asignada !== false && !documentosParaVentana(v, fabricacionSolo).length)
+    ) : [];
+
     cont.innerHTML = subirHtml + `
       <div class="section-title">📐 Planos</div>
       ${bloqueDocumentos(planosSolo, admin ? "Todavía no has subido ningún plano." : "La oficina todavía no ha subido planos de esta obra.")}
       <div class="section-title" style="margin-top:18px;">📋 Parte de fabricación</div>
       <p class="muted" style="margin-top:-4px;margin-bottom:10px;">
         Sube aquí el parte de fabricación (PDF) para tenerlo a mano — desde la ficha de cada ventana
-        hay un acceso directo a esta sección, ya que los códigos de ventana que usa la app son los
-        mismos que aparecen en el documento.
+        hay un acceso directo que, si solo tiene un documento enlazado, lo abre directamente, ya que
+        los códigos de ventana que usa la app son los mismos que aparecen en el documento.
       </p>
       ${bloqueDocumentos(fabricacionSolo, admin ? "Todavía no has subido ningún parte de fabricación." : "La oficina todavía no ha subido el parte de fabricación de esta obra.")}
+      ${ventanasSinFabricacion.length ? `
+        <p class="muted" style="margin-top:14px;font-size:11.5px;line-height:1.5;">
+          ⏳ Ventanas todavía sin parte de fabricación asignado (${ventanasSinFabricacion.length}):
+          ${ventanasSinFabricacion.map(v=>esc(etiquetaCorta(v))).join(", ")}
+        </p>
+      ` : ""}
     `;
 
     if(admin){
@@ -1878,9 +1907,10 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
 
   const unsub2 = obraRef.collection("ventanas").orderBy("numero").onSnapshot(snap=>{
     ventanas = snap.docs.map(d=>({id:d.id, ...d.data()}));
-    // Obra antigua sin el resumen de progreso todavía (creada antes de esta función): se calcula
-    // una vez, sola, sin coste extra — ya estamos leyendo estas mismas ventanas para la cuadrícula.
-    if(admin && obraData && obraData.progreso === undefined && !recalculando){
+    // Obra antigua sin el resumen de progreso todavía (creada antes de esta función), o sin el
+    // contador de "sin asignar" todavía (creada antes de esa mejora): se calcula una vez, sola, sin
+    // coste extra — ya estamos leyendo estas mismas ventanas para la cuadrícula.
+    if(admin && obraData && (obraData.progreso === undefined || obraData.numSinAsignar === undefined) && !recalculando){
       recalculando = true;
       recalcularProgresoObra(obraId, ventanas).finally(()=> recalculando = false);
     }
@@ -1952,7 +1982,8 @@ function abrirGenerarGenericas(obraId, obraData, numeroInicial){
     closeModal();
     try{
       const creadas = await crearVentanasGenericas(obraId, n, numeroInicial);
-      await db.collection("obras").doc(obraId).update({ numVentanas: firebase.firestore.FieldValue.increment(creadas.length) });
+      // Todavía sin usar (asignada:false): no cuentan en numVentanas ni en el % hasta que se asignen.
+      await db.collection("obras").doc(obraId).update({ numSinAsignar: firebase.firestore.FieldValue.increment(creadas.length) });
       toast(`${creadas.length} QR genéricos generados, preparando PDF…`);
       await generarPdfQr(obraId, obraData, creadas);
     }catch(err){ toast("Error: " + err.message); }
@@ -2295,7 +2326,14 @@ function renderVentana(obraId, ventanaId){
     document.getElementById("btnLlevaCompositeSi").addEventListener("click", ()=> cambiarLlevaComposite(true));
     document.getElementById("btnLlevaCompositeNo").addEventListener("click", ()=> cambiarLlevaComposite(false));
     document.getElementById("btnVolverObra").addEventListener("click", ()=> navegar(`#/obra/${obraId}`));
-    document.getElementById("btnVerFabricacion").addEventListener("click", ()=> navegar(`#/obra/${obraId}/planos`));
+    document.getElementById("btnVerFabricacion").addEventListener("click", ()=>{
+      // Si esta ventana en concreto tiene un único parte de fabricación enlazado (ver
+      // documentosParaVentana), se abre directamente ese documento — así no hay que ir a buscarlo a
+      // mano entre todos los de la obra. Si hay varios enlazados (o ninguno), se va al listado general.
+      const docs = documentosParaVentana(v, documentosFabricacion);
+      if(docs.length === 1) window.open(docs[0].url, "_blank", "noopener");
+      else navegar(`#/obra/${obraId}/planos`);
+    });
     document.getElementById("btnEditarAsignacion").addEventListener("click", ()=> abrirEditarAsignacion(obraId, ventanaId, vRef, v));
     const btnEliminarVentana = document.getElementById("btnEliminarVentana");
     if(btnEliminarVentana) btnEliminarVentana.addEventListener("click", ()=> eliminarVentana(obraId, ventanaId, v));
@@ -2495,7 +2533,11 @@ async function fusionarVentanas(obraId, origenId, origenData, destino){
     aliasTo: destino.id, asignada: true,
     actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
   });
-  db.collection("obras").doc(obraId).update({ numVentanas: firebase.firestore.FieldValue.increment(-1) }).catch(()=>{});
+  // El origen deja de verse como ventana aparte (se convierte en alias): se descuenta de donde
+  // estuviera contando hasta ahora — "sin asignar" si era un QR genérico todavía sin usar, o
+  // numVentanas si ya era una ventana real (p.ej. al corregir una identificación duplicada).
+  const campoADescontar = origenData.asignada === false ? "numSinAsignar" : "numVentanas";
+  db.collection("obras").doc(obraId).update({ [campoADescontar]: firebase.firestore.FieldValue.increment(-1) }).catch(()=>{});
   // El estado combinado puede haber cambiado los contadores agregados de la obra (progreso), así
   // que se recalculan desde cero para que el % y los contadores por etapa sigan siendo exactos.
   try{
@@ -2513,7 +2555,7 @@ async function vincularVentana(obraId, ventanaId, vRef, destinoDoc, origenData){
   }catch(err){ toast("Error: " + err.message); }
 }
 
-async function guardarVentanaNueva(obraId, ventanaId, vRef, datos){
+async function guardarVentanaNueva(obraId, ventanaId, vRef, datos, origenData){
   try{
     await vRef.update({
       casa: datos.casa, planta: datos.planta, numeroPlano: datos.numeroPlano, referencia: datos.referencia,
@@ -2521,6 +2563,14 @@ async function guardarVentanaNueva(obraId, ventanaId, vRef, datos){
       asignada: true,
       actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
     });
+    // Si venía de un QR genérico todavía sin usar (asignada:false), a partir de ahora pasa a contar
+    // como ventana real: se mueve de "sin asignar" a numVentanas (ver recalcularProgresoObra).
+    if(origenData && origenData.asignada === false){
+      db.collection("obras").doc(obraId).update({
+        numVentanas: firebase.firestore.FieldValue.increment(1),
+        numSinAsignar: firebase.firestore.FieldValue.increment(-1)
+      }).catch(()=>{});
+    }
     toast("Ventana asignada");
     closeModal();
   }catch(err){ toast("Error: " + err.message); }
@@ -2552,7 +2602,7 @@ function abrirSelectorVinculo(obraId, ventanaId, vRef, candidatos, datos, origen
   document.querySelectorAll("[data-idx]").forEach(b=>{
     b.addEventListener("click", ()=> vincularVentana(obraId, ventanaId, vRef, lista[parseInt(b.dataset.idx,10)], origenData));
   });
-  document.getElementById("btnNingunaCoincide").addEventListener("click", ()=> guardarVentanaNueva(obraId, ventanaId, vRef, datos));
+  document.getElementById("btnNingunaCoincide").addEventListener("click", ()=> guardarVentanaNueva(obraId, ventanaId, vRef, datos, origenData));
 }
 
 // permitirVincular: true en la primera asignación de un QR genérico (pintarAsignacion), false al
@@ -2580,7 +2630,7 @@ async function guardarAsignacion(obraId, ventanaId, vRef, permitirVincular, orig
 
   if(!candidatos.length){
     if(btn){ btn.innerHTML = `<span class="spin"></span> Guardando…`; }
-    await guardarVentanaNueva(obraId, ventanaId, vRef, datos);
+    await guardarVentanaNueva(obraId, ventanaId, vRef, datos, origen);
     if(btn){ btn.disabled = false; btn.textContent = labelOriginal; }
     return;
   }
@@ -4100,10 +4150,79 @@ function generarPdfInformeInstalacion(tituloAmbito, periodoLabel, eventos, venta
   doc.setFontSize(10); doc.setTextColor(120);
   doc.text(periodoLabel, margen, y); y += 5;
   doc.text(`Generado: ${new Date().toLocaleString("es-ES")}`, margen, y); y += 10;
-  doc.setFontSize(11); doc.setTextColor(20);
-  doc.text(`${eventos.length} etapa${eventos.length===1?"":"s"} completada${eventos.length===1?"":"s"} en el periodo`, margen, y);
-  y += 8;
+
+  // --- Resumen (de un vistazo, como el total del Excel): total, desglose por etapa e instaladores ---
+  const porEtapa = {instalada:0,sellada:0,acristalada:0,composite:0,terminada:0};
+  eventos.forEach(ev=>{ if(ETAPAS.includes(ev.etapa)) porEtapa[ev.etapa]++; });
+  const ventanasAfectadas = new Set(eventos.map(ev=> ev.ventanaId || ev.ventanaEtiqueta || "")).size;
+  const instaladoresResumen = agregarPorInstalador(eventos);
+
+  doc.setFontSize(12.5); doc.setTextColor(20);
+  doc.text("Resumen", margen, y); y += 6;
+  doc.setFontSize(9.5); doc.setTextColor(90);
+  doc.text(
+    `${eventos.length} etapa${eventos.length===1?"":"s"} completada${eventos.length===1?"":"s"} · ` +
+    `${ventanasAfectadas} ventana${ventanasAfectadas===1?"":"s"} · ` +
+    `${instaladoresResumen.length} instalador${instaladoresResumen.length===1?"":"es"}`,
+    margen, y
+  );
+  y += 7;
+
+  // Una cajita por etapa con su total, igual que el resumen que ya se ve en la propia app.
+  const gap = 3;
+  const boxW = (anchoUtil - gap*(ETAPAS.length-1)) / ETAPAS.length;
+  const boxH = 15;
+  ETAPAS.forEach((e,i)=>{
+    const x = margen + i*(boxW+gap);
+    doc.setFillColor(240,247,242);
+    doc.setDrawColor(198,225,209);
+    doc.roundedRect(x, y, boxW, boxH, 1.4, 1.4, "FD");
+    doc.setFontSize(13); doc.setTextColor(21,128,61);
+    doc.text(String(porEtapa[e]), x + boxW/2, y + 7, { align: "center" });
+    doc.setFontSize(7); doc.setTextColor(95);
+    doc.text(`${ETAPA_ICONO[e]} ${ETAPA_LABEL[e]}`, x + boxW/2, y + 12, { align: "center" });
+  });
+  y += boxH + 8;
+
+  if(instaladoresResumen.length > 1){
+    doc.setFontSize(9); doc.setTextColor(90);
+    const texto = instaladoresResumen.map(f=> `${f.nombre} (${f.total})`).join("   ·   ");
+    const lineas = doc.splitTextToSize(texto, anchoUtil);
+    doc.text(lineas, margen, y);
+    y += lineas.length * 4.4 + 4;
+  }
+
   doc.setDrawColor(200); doc.line(margen, y, 210-margen, y); y += 8;
+
+  // --- Detalle: una tabla con las mismas columnas que el Excel exportado, agrupada por día ---
+  const global = !ventanasPorId; // sin obra concreta = "todas las obras": hace falta columna Obra
+  const cols = global
+    ? [
+        { key: "hora", label: "Hora", w: 14 },
+        { key: "obra", label: "Obra", w: 42 },
+        { key: "ventana", label: "Ventana", w: 28 },
+        { key: "etapa", label: "Etapa", w: 32 },
+        { key: "instalador", label: "Instalador", w: anchoUtil - (14+42+28+32) }
+      ]
+    : [
+        { key: "hora", label: "Hora", w: 14 },
+        { key: "casa", label: "Casa / Planta", w: 38 },
+        { key: "ventana", label: "Ventana", w: 26 },
+        { key: "etapa", label: "Etapa", w: 32 },
+        { key: "instalador", label: "Instalador", w: anchoUtil - (14+38+26+32) }
+      ];
+  let colX = margen;
+  cols.forEach(c=>{ c.x = colX; colX += c.w; });
+
+  function dibujarCabeceraTabla(){
+    doc.setFillColor(241,245,243);
+    doc.rect(margen, y, anchoUtil, 7, "F");
+    doc.setFont("helvetica","bold"); doc.setFontSize(8.5); doc.setTextColor(70);
+    cols.forEach(c=> doc.text(truncarAncho(doc, c.label, c.w - 3), c.x + 1.5, y + 4.8));
+    doc.setFont("helvetica","normal");
+    y += 7;
+    doc.setDrawColor(210); doc.line(margen, y, 210-margen, y);
+  }
 
   const ordenados = [...eventos].sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
   const porDia = new Map();
@@ -4113,27 +4232,34 @@ function generarPdfInformeInstalacion(tituloAmbito, periodoLabel, eventos, venta
     porDia.get(clave).push(ev);
   });
 
+  const rowH = 6;
   for(const [, lista] of porDia){
-    if(y > 265){ doc.addPage(); y = margen; }
-    doc.setFontSize(12.5); doc.setTextColor(20);
+    if(y > 260){ doc.addPage(); y = margen; }
+    doc.setFontSize(11.5); doc.setTextColor(20);
     const fechaLegible = new Date(lista[0].fecha).toLocaleDateString("es-ES", { weekday:"long", day:"2-digit", month:"2-digit", year:"numeric" });
-    doc.text(`${fechaLegible}  —  ${lista.length} etapa${lista.length===1?"":"s"}`, margen, y); y += 6;
-    doc.setDrawColor(225); doc.line(margen, y-3.5, 210-margen, y-3.5);
+    doc.text(`${fechaLegible}  ·  ${lista.length} etapa${lista.length===1?"":"s"}`, margen, y); y += 5;
+    dibujarCabeceraTabla();
+
+    let filaPar = false;
     for(const ev of lista){
+      if(y > 280){ doc.addPage(); y = margen; dibujarCabeceraTabla(); filaPar = false; }
+      if(filaPar){ doc.setFillColor(249,250,249); doc.rect(margen, y, anchoUtil, rowH, "F"); }
+      filaPar = !filaPar;
+
       const v = ventanasPorId ? ventanasPorId.get(ev.ventanaId) : null;
-      const detalle = [v && v.casa && `Casa ${v.casa}`, v && v.planta && `Planta ${v.planta}`].filter(Boolean).join(" · ");
-      const obraTxt = ventanasPorId ? "" : `${ev.obraNombre||""} — `;
       const hora = new Date(ev.fecha).toLocaleTimeString("es-ES", { hour:"2-digit", minute:"2-digit" });
       const etapaTxt = `${ETAPA_ICONO[ev.etapa]||""} ${ETAPA_LABEL[ev.etapa]||ev.etapa}`;
-      const linea = `${hora}  —  ${obraTxt}${ev.ventanaEtiqueta||""}${detalle ? " ("+detalle+")" : ""}  —  ${etapaTxt}  —  ${ev.nombre||"—"}`;
-      doc.setFontSize(10); doc.setTextColor(40);
-      const lineasAjustadas = doc.splitTextToSize(linea, anchoUtil - 4);
-      if(y + lineasAjustadas.length*5.5 > 285){ doc.addPage(); y = margen; }
-      doc.text(lineasAjustadas, margen+4, y);
-      y += lineasAjustadas.length * 5.5;
+      const valores = global
+        ? { hora, obra: ev.obraNombre||"", ventana: ev.ventanaEtiqueta||"", etapa: etapaTxt, instalador: ev.nombre||"—" }
+        : { hora, casa: [v && v.casa && `Casa ${v.casa}`, v && v.planta && `Pl ${v.planta}`].filter(Boolean).join(" · "), ventana: ev.ventanaEtiqueta||"", etapa: etapaTxt, instalador: ev.nombre||"—" };
+
+      doc.setFontSize(9); doc.setTextColor(40);
+      cols.forEach(c=> doc.text(truncarAncho(doc, valores[c.key] ?? "", c.w - 3), c.x + 1.5, y + 4.2));
+      y += rowH;
     }
-    y += 3;
+    y += 4;
   }
+
   doc.save(`Informe_instalacion_${slug(tituloAmbito)}_${new Date().toISOString().slice(0,10)}.pdf`);
   toast("PDF de instalación generado");
 }
