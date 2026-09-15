@@ -303,6 +303,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-storage-compat.js"></script>
 <!-- Generación de QR -->
 <script src="https://cdn.jsdelivr.net/npm/davidshimjs-qrcodejs@0.0.2/qrcode.min.js"></script>
 <!-- Generación de PDF -->
@@ -330,18 +331,6 @@ const firebaseConfig = {
 };
 
 const CONFIG_OK = !Object.values(firebaseConfig).some(v => String(v).startsWith("TU_"));
-
-/* ============================================================
-   CONFIGURACIÓN DE CLOUDINARY (para fotos y planos)
-   Alternativa gratuita sin tarjeta a Firebase Storage.
-   Sustituye estos dos valores por los de tu propia cuenta Cloudinary
-   (gratis, sin tarjeta). Instrucciones completas en README.md
-   ============================================================ */
-const CLOUDINARY_CONFIG = {
-  cloudName: "vcjtar9m",
-  uploadPreset: "control_obra"
-};
-const CLOUDINARY_OK = !CLOUDINARY_CONFIG.cloudName.startsWith("TU_") && !CLOUDINARY_CONFIG.uploadPreset.startsWith("TU_");
 
 /* ============================================================
    CÓDIGO DE ACCESO PARA CREAR LA PRIMERA CUENTA DE ADMINISTRADOR
@@ -478,7 +467,7 @@ function filtrarPorPlanta(ventanas, planta){
 /* ============================================================
    ESTADO GLOBAL
    ============================================================ */
-let app, db, auth;
+let app, db, auth, storage;
 let currentUser = null;      // objeto de Firebase Auth
 let currentUserData;         // undefined = cargando, null = sin ficha en "usuarios", objeto = cargado
 let usuarioUnsub = null;     // listener de usuarios/{uid}, vive fuera del ciclo de rutas
@@ -803,8 +792,8 @@ function renderSetupNecesario(){
       proyecto Firebase.<br/><br/>
       Sigue la guía paso a paso del archivo <code>README.md</code> que acompaña a esta app
       (tarda unos 10 minutos y es gratis, sin necesidad de tarjeta).<br/><br/>
-      Para las fotos y los planos hay un segundo paso opcional (Cloudinary, también gratis y sin tarjeta) —
-      sin él, la app funciona igual pero no se podrán subir hasta configurarlo.
+      Las fotos, los planos y las firmas se guardan en el almacenamiento de archivos del mismo
+      proyecto Firebase (Cloud Storage) — no hace falta ninguna cuenta ni configuración aparte.
     </div>
   `;
 }
@@ -1503,7 +1492,6 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
         </label>
         <input type="file" id="inpPlano" accept="image/*,.pdf" style="display:none;" />
         <button class="btn btn-primary btn-block" id="btnSubirPlano">📤 Subir documento</button>
-        ${!CLOUDINARY_OK ? `<p class="muted" style="margin-top:8px;">Falta configurar Cloudinary para poder subir documentos (ver README.md).</p>` : ""}
       </div>` : "";
 
     // Bloque compartido para pintar tanto Planos como Parte de fabricación: mismo aspecto, misma
@@ -1583,8 +1571,7 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
           <div class="empty">Todavía no hay ningún plano de esta promoción.</div>
           ${admin ? `
             <button class="btn btn-primary btn-block" id="btnSubirMapa" style="margin-top:10px;">📤 Subir plano de la promoción</button>
-            <p class="muted" style="margin-top:8px;">Sube una imagen (foto o captura) o directamente el PDF del arquitecto — si es un PDF se usa su primera página. Si la obra tiene varias plantas o bloques, puedes subir un plano distinto para cada uno.</p>
-            ${!CLOUDINARY_OK ? `<p class="muted" style="margin-top:4px;">Falta configurar Cloudinary para poder subir el plano (ver README.md).</p>` : ""}
+            <p class="muted" style="margin-top:8px;">Sube una imagen (foto o captura de pantalla) del plano — aquí no se admite PDF directamente, si el plano solo lo tienes en PDF hazle antes una captura. Si la obra tiene varias plantas o bloques, puedes subir un plano distinto para cada uno.</p>
           ` : `<div class="empty">La oficina todavía no ha subido ningún plano de esta obra.</div>`}
         </div>
       `;
@@ -1644,9 +1631,8 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
             ${mapaZoom > 1 ? `<button type="button" class="mapa-zoom-btn" id="btnMapaZoomReset" title="Restablecer">↺</button>` : ""}
           </div>
         </div>
-        ${admin ? `<input type="file" id="inpMapa2" accept="image/*,.pdf" style="display:none;" />` : ""}
+        ${admin ? `<input type="file" id="inpMapa2" accept="image/*" style="display:none;" />` : ""}
       </div>
-      ${admin ? `<p class="muted" style="font-size:11.5px;margin-top:6px;">Si has subido un PDF y el plano no se ve, revisa el punto 5 de la sección 2 del README (Cloudinary).</p>` : ""}
       ${admin && casasSinMarcar.length ? `
         <div class="card" style="margin-top:14px;">
           <div class="section-title">Casas de este plano todavía sin marcar</div>
@@ -2358,13 +2344,16 @@ function renderVentana(obraId, ventanaId){
       btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Guardando…`;
       const autor = nombreUsuario() || "—";
       try{
-        let fotoUrl = "";
+        let fotoUrl = "", fotoPath = "";
         if(fotoIncidenciaLista){
-          if(CLOUDINARY_OK){ const { url } = await subirArchivoCloudinary(fotoIncidenciaLista); fotoUrl = url; }
-          else toast("Falta configurar Cloudinary: la foto no se pudo subir (ver README.md)");
+          try{
+            const comprimida = await comprimirImagen(fotoIncidenciaLista);
+            const subida = await subirArchivoStorage(comprimida, `obras/${obraId}/ventanas/${ventanaId}/incidencias`);
+            fotoUrl = subida.url; fotoPath = subida.path;
+          }catch(err){ toast("Aviso: la foto de la incidencia no se pudo subir (" + err.message + ")"); }
         }
         await vRef.update({
-          incidencias: firebase.firestore.FieldValue.arrayUnion({ texto, fotoUrl, autor, fecha: new Date().toISOString(), resuelta: false }),
+          incidencias: firebase.firestore.FieldValue.arrayUnion({ texto, fotoUrl, fotoPath, autor, fecha: new Date().toISOString(), resuelta: false }),
           actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
         });
         fotoIncidenciaLista = null;
@@ -2383,8 +2372,12 @@ function renderVentana(obraId, ventanaId){
       b.addEventListener("click", async ()=>{
         if(!confirmar("¿Eliminar esta incidencia?")) return;
         const idx = parseInt(b.dataset.idx,10);
+        const eliminada = (v.incidencias||[])[idx];
         const nuevas = (v.incidencias||[]).filter((_,i)=> i!==idx);
-        try{ await vRef.update({ incidencias: nuevas }); }catch(err){ toast("Error: " + err.message); }
+        try{
+          await vRef.update({ incidencias: nuevas });
+          if(eliminada && eliminada.fotoPath) borrarArchivoStorage(eliminada.fotoPath);
+        }catch(err){ toast("Error: " + err.message); }
       });
     });
 
@@ -2398,14 +2391,13 @@ function renderVentana(obraId, ventanaId){
         const firmante = (document.getElementById("inpFirmante").value || "").trim();
         if(!firmante){ toast("Indica el nombre de quien firma"); return; }
         if(!firmaPad || firmaPad.estaVacia()){ toast("Falta la firma"); return; }
-        if(!CLOUDINARY_OK){ toast("Falta configurar Cloudinary: no se puede guardar la firma (ver README.md)"); return; }
         btnGuardarFirma.disabled = true; btnGuardarFirma.innerHTML = `<span class="spin"></span> Guardando…`;
         try{
           const blob = await firmaPad.obtenerBlob();
           if(!blob) throw new Error("No se pudo procesar la firma");
-          const { url } = await subirArchivoCloudinary(new File([blob], "firma.png", { type: "image/png" }));
+          const { url, path } = await subirArchivoStorage(new File([blob], "firma.png", { type: "image/png" }), `obras/${obraId}/ventanas/${ventanaId}/entrega`);
           await vRef.update({
-            entrega: { firmante, firmaUrl: url, fecha: new Date().toISOString(), autor: nombreUsuario() || "—" },
+            entrega: { firmante, firmaUrl: url, firmaPath: path, fecha: new Date().toISOString(), autor: nombreUsuario() || "—" },
             actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
           });
           toast("Entrega registrada");
@@ -2418,8 +2410,11 @@ function renderVentana(obraId, ventanaId){
       const btnQuitarFirma = document.getElementById("btnQuitarFirma");
       if(btnQuitarFirma) btnQuitarFirma.addEventListener("click", async ()=>{
         if(!confirmar("¿Quitar la firma de entrega de esta ventana?")) return;
-        try{ await vRef.update({ entrega: null }); toast("Firma eliminada"); }
-        catch(err){ toast("Error: " + err.message); }
+        try{
+          await vRef.update({ entrega: null });
+          if(v.entrega && v.entrega.firmaPath) borrarArchivoStorage(v.entrega.firmaPath);
+          toast("Firma eliminada");
+        }catch(err){ toast("Error: " + err.message); }
       });
     }
   }
@@ -2732,14 +2727,13 @@ function abrirCapturaRapida(obraId, ventanaId, vRef, etapasActivadas){
     if(btnS){ btnS.disabled = true; }
     const autor = nombreUsuario() || "—";
     try{
-      if(fotoLista && CLOUDINARY_OK){
-        const { url, publicId } = await subirArchivoCloudinary(fotoLista);
+      if(fotoLista){
+        const comprimida = await comprimirImagen(fotoLista);
+        const { url, path } = await subirArchivoStorage(comprimida, `obras/${obraId}/ventanas/${ventanaId}/fotos`);
         await vRef.update({
-          fotos: firebase.firestore.FieldValue.arrayUnion({ url, publicId, autor, fecha: new Date().toISOString() }),
+          fotos: firebase.firestore.FieldValue.arrayUnion({ url, path, autor, fecha: new Date().toISOString() }),
           actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
         });
-      } else if(fotoLista && !CLOUDINARY_OK){
-        toast("Falta configurar Cloudinary: la foto no se pudo subir (ver README.md)");
       }
       if(notaTxt){
         await vRef.update({
@@ -2791,36 +2785,60 @@ async function borrarNota(vRef, nota){
   catch(err){ toast("Error: " + err.message); }
 }
 
-// Sube un archivo a Cloudinary (imagen o PDF) usando el preset sin firmar. Sirve tanto para fotos como para planos.
-async function subirArchivoCloudinary(file){
-  const fd = new FormData();
-  fd.append("file", file);
-  fd.append("upload_preset", CLOUDINARY_CONFIG.uploadPreset);
-  const resp = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CONFIG.cloudName}/auto/upload`, {
-    method: "POST", body: fd
-  });
-  const data = await resp.json();
-  if(!resp.ok || !data.secure_url){
-    throw new Error(data?.error?.message || "Fallo al subir el archivo");
-  }
-  return { url: data.secure_url, publicId: data.public_id, resourceType: data.resource_type };
+// Sube un archivo a Firebase Storage (Cloud Storage del propio proyecto) dentro de la "carpeta"
+// indicada, con un nombre único para no pisar archivos con el mismo nombre. Sirve tanto para
+// fotos como para planos y firmas. Devuelve la URL para mostrarlo y la "ruta" (path), que hay que
+// guardar junto al dato para poder borrar el archivo más tarde si se elimina el registro.
+async function subirArchivoStorage(file, carpeta){
+  const limpio = (file.name || "archivo").replace(/[^\w.\-]+/g, "_");
+  const path = `${carpeta}/${Date.now()}_${Math.random().toString(36).slice(2,8)}_${limpio}`;
+  const ref = storage.ref(path);
+  await ref.put(file, file.type ? { contentType: file.type } : undefined);
+  const url = await ref.getDownloadURL();
+  return { url, path };
+}
+
+// Borra un archivo de Storage por su "path". Se usa al eliminar fotos/planos/firmas para no dejar
+// archivos huérfanos ocupando espacio (y, en el plan Blaze, generando coste) sin motivo. No es
+// crítico si falla (por ejemplo, si el archivo ya no existiera), así que no interrumpe el borrado
+// del dato en Firestore.
+async function borrarArchivoStorage(path){
+  if(!path) return;
+  try{ await storage.ref(path).delete(); }catch(err){ /* no crítico */ }
+}
+
+// Reduce el tamaño de una foto antes de subirla. Las cámaras de los móviles hacen fotos de varios
+// MB, y a diferencia de Cloudinary, Firebase Storage no las optimiza automáticamente al servirlas
+// — así que conviene reducirlas aquí mismo, en el propio dispositivo, antes de subirlas: se sube
+// menos, ocupa menos y se ve más rápido en la app. Si el archivo no es una imagen, ya es pequeño,
+// o algo falla (navegador antiguo, etc.), se sube el archivo original tal cual.
+async function comprimirImagen(file, maxLado = 1600, calidad = 0.82){
+  if(!file || !file.type || !file.type.startsWith("image/") || file.type === "image/svg+xml") return file;
+  try{
+    const bitmap = await createImageBitmap(file);
+    const escala = Math.min(1, maxLado / Math.max(bitmap.width, bitmap.height));
+    if(escala >= 1 && file.size < 900 * 1024) return file; // ya es pequeña: no merece la pena recomprimir
+    const w = Math.round(bitmap.width * escala), h = Math.round(bitmap.height * escala);
+    const canvas = document.createElement("canvas");
+    canvas.width = w; canvas.height = h;
+    canvas.getContext("2d").drawImage(bitmap, 0, 0, w, h);
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/jpeg", calidad));
+    if(!blob || blob.size >= file.size) return file; // si no mejora nada, mejor quedarse con el original
+    return new File([blob], (file.name || "foto").replace(/\.\w+$/, "") + ".jpg", { type: "image/jpeg" });
+  }catch(err){ return file; }
 }
 
 async function subirFotos(obraId, ventanaId, vRef, files){
   if(!files || !files.length) return;
-  if(!CLOUDINARY_OK){
-    toast("Falta configurar Cloudinary para poder subir fotos (ver README.md)");
-    document.getElementById("inpFoto").value = "";
-    return;
-  }
   const autor = nombreUsuario() || "—";
   toast(`Subiendo ${files.length} foto(s)…`);
   for(const file of files){
     try{
-      const { url, publicId } = await subirArchivoCloudinary(file);
+      const comprimida = await comprimirImagen(file);
+      const { url, path } = await subirArchivoStorage(comprimida, `obras/${obraId}/ventanas/${ventanaId}/fotos`);
       await vRef.update({
         fotos: firebase.firestore.FieldValue.arrayUnion({
-          url, publicId, autor, fecha: new Date().toISOString()
+          url, path, autor, fecha: new Date().toISOString()
         }),
         actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
       });
@@ -2834,6 +2852,7 @@ async function borrarFoto(vRef, foto){
   if(!confirmar("¿Quitar esta foto de la ventana? Dejará de verse en la app.")) return;
   try{
     await vRef.update({ fotos: firebase.firestore.FieldValue.arrayRemove(foto) });
+    if(foto && foto.path) borrarArchivoStorage(foto.path);
   }catch(err){ toast("Error: " + err.message); }
 }
 
@@ -2893,11 +2912,6 @@ function parseCodigosVentana(texto){
 
 async function subirPlano(obraId, files, categoria, ambito, codigosVentana){
   if(!files || !files.length) return;
-  if(!CLOUDINARY_OK){
-    toast("Falta configurar Cloudinary para poder subir documentos (ver README.md)");
-    document.getElementById("inpPlano").value = "";
-    return;
-  }
   const subidoPor = nombreUsuario() || "—";
   const esFabricacion = categoria === "fabricacion";
   codigosVentana = codigosVentana || [];
@@ -2905,15 +2919,14 @@ async function subirPlano(obraId, files, categoria, ambito, codigosVentana){
   const obraRef = db.collection("obras").doc(obraId);
   for(const file of files){
     try{
-      const { url, publicId } = await subirArchivoCloudinary(file);
-      // OJO: Cloudinary clasifica los PDF también como resource_type "image" (para poder generar
-      // miniaturas de sus páginas), así que NO sirve para distinguir un PDF de una foto real — hay
-      // que mirar el propio archivo (nombre/tipo) o el resultado se intenta mostrar como <img> y
-      // sale roto. Miramos la extensión y el MIME type del archivo original.
       const esPdf = /\.pdf$/i.test(file.name||"") || file.type === "application/pdf";
+      // Los PDF se suben tal cual (no se pueden recomprimir con canvas); las imágenes se
+      // redimensionan un poco menos que las fotos normales, para no perder legibilidad en planos.
+      const archivoParaSubir = esPdf ? file : await comprimirImagen(file, 2000, 0.85);
+      const { url, path } = await subirArchivoStorage(archivoParaSubir, `obras/${obraId}/documentos`);
       await obraRef.collection("planos").add({
         nombre: file.name || (esFabricacion ? "Parte de fabricación" : "Plano"),
-        url, publicId,
+        url, path,
         tipo: esPdf ? "pdf" : "image",
         categoria: esFabricacion ? "fabricacion" : "plano",
         ambito: esFabricacion ? (ambito || "") : "",
@@ -2930,7 +2943,11 @@ async function subirPlano(obraId, files, categoria, ambito, codigosVentana){
 async function borrarPlano(obraId, planoId){
   if(!confirmar("¿Eliminar este plano?")) return;
   try{
-    await db.collection("obras").doc(obraId).collection("planos").doc(planoId).delete();
+    const ref = db.collection("obras").doc(obraId).collection("planos").doc(planoId);
+    const snap = await ref.get();
+    await ref.delete();
+    const data = snap.data();
+    if(data && data.path) borrarArchivoStorage(data.path);
   }catch(err){ toast("Error: " + err.message); }
 }
 
@@ -2939,26 +2956,21 @@ async function borrarPlano(obraId, planoId){
    con imagen + marcas de cada casa, guardados en obras/{obraId}/mapas
    ============================================================ */
 
-// El plano se pinta en un <img>, y un PDF no se puede mostrar ahí directamente: se le pide a
-// Cloudinary que convierta su primera página a JPG (pg_1), reutilizando el mismo archivo que ya
-// se ha subido — así no hace falta guardar dos URLs distintas para el mismo plano.
-function urlDesdeArchivoSubido(file, subida){
-  const esPdf = /\.pdf$/i.test(file.name||"") || file.type === "application/pdf";
-  return esPdf
-    ? `https://res.cloudinary.com/${CLOUDINARY_CONFIG.cloudName}/image/upload/pg_1/${subida.publicId}.jpg`
-    : subida.url;
-}
+// El plano de la promoción se pinta en un <img>, así que solo admite imágenes (JPG/PNG) — a
+// diferencia de los "Documentos" (planos/partes de fabricación), aquí no se admite PDF: Firebase
+// Storage no puede convertir su primera página a imagen como hacía Cloudinary. Si el plano está en
+// PDF, hay que hacerle antes una captura de pantalla o exportarlo como imagen.
 
 // Devuelve el id del nuevo plano (o null si falló), para que quien lo llame pueda dejarlo
 // seleccionado automáticamente.
 async function subirMapaObra(obraId, file, nombre){
-  if(!CLOUDINARY_OK){ toast("Falta configurar Cloudinary para poder subir el plano (ver README.md)"); return null; }
   toast("Subiendo plano…");
   try{
-    const subida = await subirArchivoCloudinary(file);
+    const comprimida = await comprimirImagen(file, 2200, 0.85);
+    const { url, path } = await subirArchivoStorage(comprimida, `obras/${obraId}/mapas`);
     const ref = await db.collection("obras").doc(obraId).collection("mapas").add({
       nombre: nombre || "Plano",
-      url: urlDesdeArchivoSubido(file, subida),
+      url, path,
       marcadores: [],
       fecha: new Date().toISOString()
     });
@@ -2974,8 +2986,8 @@ function abrirNuevoPlanoMapa(obraId, mapasActuales, onCreado){
     <label class="field"><span>Nombre (planta, bloque...)</span>
       <input type="text" id="inpNombreMapa" value="${esc(nombreSugerido)}" placeholder="Ej: Planta 1, Bloque A..." autofocus />
     </label>
-    <label class="field"><span>Imagen o PDF del plano</span>
-      <input type="file" id="inpArchivoMapa" accept="image/*,.pdf" />
+    <label class="field"><span>Imagen del plano (JPG o PNG)</span>
+      <input type="file" id="inpArchivoMapa" accept="image/*" />
     </label>
     <button class="btn btn-primary btn-block" id="btnSubirNuevoMapa">Subir</button>
   `);
@@ -2983,7 +2995,7 @@ function abrirNuevoPlanoMapa(obraId, mapasActuales, onCreado){
     const nombre = document.getElementById("inpNombreMapa").value.trim();
     const file = document.getElementById("inpArchivoMapa").files[0];
     if(!nombre){ toast("Ponle un nombre al plano (por ejemplo, la planta)"); return; }
-    if(!file){ toast("Elige la imagen o el PDF del plano"); return; }
+    if(!file){ toast("Elige la imagen del plano"); return; }
     closeModal();
     const nuevoId = await subirMapaObra(obraId, file, nombre);
     if(nuevoId && onCreado) onCreado(nuevoId);
@@ -2991,11 +3003,15 @@ function abrirNuevoPlanoMapa(obraId, mapasActuales, onCreado){
 }
 
 async function cambiarImagenMapa(obraId, mapaId, file){
-  if(!CLOUDINARY_OK){ toast("Falta configurar Cloudinary para poder subir el plano (ver README.md)"); return; }
   toast("Subiendo plano…");
   try{
-    const subida = await subirArchivoCloudinary(file);
-    await db.collection("obras").doc(obraId).collection("mapas").doc(mapaId).update({ url: urlDesdeArchivoSubido(file, subida) });
+    const ref = db.collection("obras").doc(obraId).collection("mapas").doc(mapaId);
+    const prevSnap = await ref.get();
+    const comprimida = await comprimirImagen(file, 2200, 0.85);
+    const { url, path } = await subirArchivoStorage(comprimida, `obras/${obraId}/mapas`);
+    await ref.update({ url, path });
+    const prevData = prevSnap.data();
+    if(prevData && prevData.path) borrarArchivoStorage(prevData.path);
     toast("Plano actualizado");
   }catch(err){ toast("Error subiendo el plano: " + err.message); }
 }
@@ -3020,7 +3036,11 @@ function abrirRenombrarMapa(obraId, mapa){
 async function eliminarMapa(obraId, mapaId){
   if(!confirmar("¿Eliminar este plano y todas sus marcas? El avance de las ventanas no se ve afectado, solo desaparece este plano.")) return false;
   try{
-    await db.collection("obras").doc(obraId).collection("mapas").doc(mapaId).delete();
+    const ref = db.collection("obras").doc(obraId).collection("mapas").doc(mapaId);
+    const snap = await ref.get();
+    await ref.delete();
+    const data = snap.data();
+    if(data && data.path) borrarArchivoStorage(data.path);
     return true;
   }catch(err){ toast("Error: " + err.message); return false; }
 }
@@ -3636,7 +3656,7 @@ function generarExcelPendientes(obraData, ventanas, ambito){
   toast("Excel de pendientes generado");
 }
 
-// Descarga una imagen (p.ej. una foto de Cloudinary) y la convierte a data URL para poder
+// Descarga una imagen (p.ej. una foto de Storage) y la convierte a data URL para poder
 // incrustarla en el PDF con jsPDF. Si la descarga falla (sin red, CORS, foto borrada…) se omite
 // la imagen sin romper el resto del informe.
 async function urlADataUrl(url){
@@ -4324,6 +4344,7 @@ function init(){
 
   app = firebase.initializeApp(firebaseConfig);
   db = firebase.firestore();
+  storage = firebase.storage();
   // Modo con menos datos: guarda los cambios en el propio dispositivo (IndexedDB) cuando no hay
   // cobertura y los sincroniza solo en cuanto vuelve la señal, en vez de perderlos sin más aviso.
   // Si el navegador no lo soporta (modo incógnito, varias pestañas sin sincronizar, etc.) la app
