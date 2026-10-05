@@ -270,6 +270,22 @@
   .userrow .info{flex:1;min-width:150px;}
   .userrow .info h3{font-size:14.5px;font-weight:700;}
   .stat-mini{display:flex;gap:10px;font-size:12.5px;color:var(--gris-600);flex-wrap:wrap;}
+  .rep-hoy{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;}
+  .rep-kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0;}
+  .rep-kpis > div{background:var(--gris-100);border-radius:10px;padding:10px 6px;text-align:center;}
+  .rep-kpis b{display:block;font-size:20px;color:var(--primario-osc);}
+  .rep-kpis span{font-size:11.5px;color:var(--gris-600);}
+  details.rep-dia{border-bottom:1px solid var(--gris-200);}
+  details.rep-dia:last-of-type{border-bottom:none;}
+  details.rep-dia summary{display:flex;align-items:center;gap:10px;padding:11px 0;cursor:pointer;list-style:none;flex-wrap:wrap;}
+  details.rep-dia summary::-webkit-details-marker{display:none;}
+  details.rep-dia .d{flex:1;min-width:120px;font-weight:700;font-size:14px;text-transform:capitalize;}
+  details.rep-dia .n{font-weight:800;font-size:18px;color:var(--primario);min-width:34px;text-align:right;}
+  details.rep-dia .who{flex-basis:100%;font-size:12px;color:var(--gris-600);}
+  .rep-fila{display:flex;gap:10px;font-size:13px;padding:5px 0 5px 4px;border-top:1px dashed var(--gris-200);flex-wrap:wrap;}
+  .rep-fila .h{color:var(--gris-600);min-width:44px;}
+  .rep-fila .q{flex:1;min-width:120px;}
+  .rep-fila .i{color:var(--gris-600);}
 </style>
 </head>
 <body>
@@ -588,6 +604,7 @@ function traducirErrorAuth(err){
    #/obra/{obraId}/fotos           -> detalle de obra (tab fotos y notas)
    #/obra/{obraId}/planos          -> detalle de obra (tab planos)
    #/obra/{obraId}/stats           -> detalle de obra (tab estadísticas)
+   #/obra/{obraId}/repartidas      -> detalle de obra (tab ventanas repartidas por día)
    #/ventana/{obraId}/{ventanaId}  -> detalle de ventana
    #/scan                          -> escáner de QR
    ============================================================ */
@@ -1136,7 +1153,7 @@ async function recalcularProgresoObra(obraId, ventanas){
    ============================================================ */
 function renderObraDetalle(obraId, tabInicial, casaInicial){
   const admin = esAdmin();
-  const TABS_ADMIN = ["ventanas","mapa","fotos","planos","stats"];
+  const TABS_ADMIN = ["ventanas","repartidas","mapa","fotos","planos","stats"];
   const TABS_INSTALADOR = ["ventanas","mapa","planos"];
   const permitidas = admin ? TABS_ADMIN : TABS_INSTALADOR;
   let tab = permitidas.includes(tabInicial) ? tabInicial : "ventanas";
@@ -1157,6 +1174,7 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
   let modoEdicionMapa = false; // solo admin: añadir/editar marcas en el plano seleccionado
   let mapaSeleccionadoId = null; // qué plano se está viendo/editando ahora mismo
   let mapaZoom = 1, mapaPanX = 0, mapaPanY = 0; // ampliación/desplazamiento del plano actual (se reinicia al cambiar de plano)
+  let repPeriodo = "semana", repDesde = "", repHasta = ""; // filtro de la pestaña Repartidas (se conserva al repintar)
   let migracionMapaIntentada = false; // evita reintentar varias veces la migración del mapa antiguo (single-map)
 
   function pintar(){
@@ -1171,6 +1189,7 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
     const tabsHtml = `
       <div class="tabs">
         <button data-tab="ventanas" class="${tab==="ventanas"?"active":""}">Ventanas</button>
+        ${admin ? `<button data-tab="repartidas" class="${tab==="repartidas"?"active":""}">Repartidas</button>` : ""}
         <button data-tab="mapa" class="${tab==="mapa"?"active":""}">Mapa</button>
         ${admin ? `<button data-tab="fotos" class="${tab==="fotos"?"active":""}">Fotos y notas</button>` : ""}
         <button data-tab="planos" class="${tab==="planos"?"active":""}">Documentos</button>
@@ -1302,6 +1321,7 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
     else if(tab === "planos") pintarPlanos();
     else if(tab === "mapa") pintarMapa(mapas, ventanasVisibles);
     else if(tab === "stats") pintarEstadisticasObra();
+    else if(tab === "repartidas") pintarRepartidas(ventanasVisibles);
     else pintarVentanasGrid(obraId, ventanasVisibles);
   }
 
@@ -1812,6 +1832,85 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
         if(e.target.files[0]) cambiarImagenMapa(obraId, mapaActual.id, e.target.files[0]);
       });
     }
+  }
+
+  // Pestaña "Repartidas": cuántas ventanas ha repartido el instalador cada día, es decir, a cuántas
+  // les ha asignado su número al escanear su QR genérico por primera vez (ver marcaReparto). Se
+  // alimenta de la lista de ventanas que ya está en directo, así que se actualiza sola.
+  function pintarRepartidas(ventanasVis){
+    const cont = document.getElementById("tabContent");
+    const todas = ventanasVis.filter(v => v.repartidaEn);
+    const sinRepartir = ventanasVis.filter(v => v.asignada === false).length;
+    const hoyRes = agruparRepartidas(ventanasVis, "hoy", "", "");
+    const res = agruparRepartidas(ventanasVis, repPeriodo, repDesde, repHasta);
+    const media = res.dias.length ? (res.items.length / res.dias.length) : 0;
+    const mediaTxt = (Math.round(media*10)/10).toLocaleString("es-ES");
+
+    cont.innerHTML = `
+      <div class="card">
+        <div class="rep-hoy">
+          <div class="pctbig">${hoyRes.items.length}</div>
+          <div class="muted">ventanas repartidas hoy · ${todas.length} en total en la obra${sinRepartir ? ` · ${sinRepartir} QR todavía sin repartir` : ""}</div>
+        </div>
+        <p class="muted" style="font-size:12.5px;margin-top:8px;">
+          Cuenta cada ventana a la que el instalador le asigna su número al escanear el QR por primera vez.
+          Solo se registran las que se reparten a partir de ahora.
+        </p>
+      </div>
+
+      <div class="card">
+        <div class="btn-row">
+          <label class="field" style="flex:1;min-width:150px;"><span>Periodo</span>
+            <select id="selPeriodoRep">
+              <option value="hoy" ${repPeriodo==="hoy"?"selected":""}>Hoy</option>
+              <option value="semana" ${repPeriodo==="semana"?"selected":""}>Esta semana</option>
+              <option value="mes" ${repPeriodo==="mes"?"selected":""}>Este mes</option>
+              <option value="rango" ${repPeriodo==="rango"?"selected":""}>Rango de fechas…</option>
+              <option value="todo" ${repPeriodo==="todo"?"selected":""}>Todo</option>
+            </select>
+          </label>
+        </div>
+        <div style="display:${repPeriodo==="rango"?"block":"none"};">
+          <div class="btn-row">
+            <label class="field"><span>Desde</span><input type="date" id="inpDesdeRep" value="${esc(repDesde)}" /></label>
+            <label class="field"><span>Hasta</span><input type="date" id="inpHastaRep" value="${esc(repHasta)}" /></label>
+          </div>
+        </div>
+        <div class="muted" style="font-size:12.5px;">${esc(res.label)}</div>
+        <div class="rep-kpis">
+          <div><b>${res.items.length}</b><span>repartidas</span></div>
+          <div><b>${res.dias.length}</b><span>días con reparto</span></div>
+          <div><b>${mediaTxt}</b><span>media por día</span></div>
+        </div>
+        ${!res.dias.length ? `<div class="empty">No se ha repartido ninguna ventana en este periodo.</div>` : res.dias.slice().reverse().map(d=>`
+          <details class="rep-dia">
+            <summary>
+              <span class="d">${esc(d.legible)}</span>
+              <span class="n">${d.items.length}</span>
+              <span class="who">${d.porInstalador.map(([n,c])=> `${esc(n)} ${c}`).join(" · ")}</span>
+            </summary>
+            ${d.items.slice().reverse().map(it=>`
+              <div class="rep-fila">
+                <span class="h">${esc(it.hora)}</span>
+                <span class="q">${esc(it.descripcion)}</span>
+                <span class="i">${esc(it.instalador)}</span>
+              </div>
+            `).join("")}
+          </details>
+        `).join("")}
+        <div class="btn-row" style="margin-top:14px;">
+          <button class="btn btn-secondary" id="btnRepPdf">🧾 Exportar PDF</button>
+          <button class="btn btn-secondary" id="btnRepXls">📊 Exportar Excel</button>
+        </div>
+      </div>
+    `;
+    document.getElementById("selPeriodoRep").addEventListener("change", (e)=>{ repPeriodo = e.target.value; pintarRepartidas(ventanasVis); });
+    const inpD = document.getElementById("inpDesdeRep");
+    if(inpD) inpD.addEventListener("change", (e)=>{ repDesde = e.target.value; pintarRepartidas(ventanasVis); });
+    const inpH = document.getElementById("inpHastaRep");
+    if(inpH) inpH.addEventListener("change", (e)=>{ repHasta = e.target.value; pintarRepartidas(ventanasVis); });
+    document.getElementById("btnRepPdf").addEventListener("click", ()=> generarPdfRepartidas(obraData.nombre||"Obra", res));
+    document.getElementById("btnRepXls").addEventListener("click", ()=> generarExcelRepartidas(obraData.nombre||"Obra", res));
   }
 
   function pintarEstadisticasObra(){
@@ -2544,6 +2643,13 @@ async function fusionarVentanas(obraId, origenId, origenData, destino){
 async function vincularVentana(obraId, ventanaId, vRef, destinoDoc, origenData){
   try{
     await fusionarVentanas(obraId, ventanaId, origenData || {}, { id: destinoDoc.id, ...destinoDoc.data() });
+    // Vincular un QR genérico sin usar a una ventana ya existente también es repartirla: se anota
+    // en la ventana real (solo si no tenía ya un reparto anotado, para no contarla dos veces).
+    if(origenData && origenData.asignada === false && !destinoDoc.data().repartidaEn){
+      try{
+        await db.collection("obras").doc(obraId).collection("ventanas").doc(destinoDoc.id).update(marcaReparto());
+      }catch(e){ /* no crítico */ }
+    }
     toast("Vinculado a la ventana existente");
     closeModal();
     navegar(`#/ventana/${obraId}/${destinoDoc.id}`);
@@ -2552,15 +2658,20 @@ async function vincularVentana(obraId, ventanaId, vRef, destinoDoc, origenData){
 
 async function guardarVentanaNueva(obraId, ventanaId, vRef, datos, origenData){
   try{
+    // Primera asignación de un QR genérico = "reparto" de esa ventana: se guarda cuándo y quién, para
+    // la pestaña "Repartidas" y sus informes por día/semana/mes. Corregir después una asignación ya
+    // hecha (abrirEditarAsignacion) NO vuelve a contar, porque ahí origenData.asignada ya es true.
+    const esReparto = !!(origenData && origenData.asignada === false);
     await vRef.update({
       casa: datos.casa, planta: datos.planta, numeroPlano: datos.numeroPlano, referencia: datos.referencia,
       ubicacion: datos.ubicacion || "",
       asignada: true,
+      ...(esReparto ? marcaReparto() : {}),
       actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
     });
     // Si venía de un QR genérico todavía sin usar (asignada:false), a partir de ahora pasa a contar
     // como ventana real: se mueve de "sin asignar" a numVentanas (ver recalcularProgresoObra).
-    if(origenData && origenData.asignada === false){
+    if(esReparto){
       db.collection("obras").doc(obraId).update({
         numVentanas: firebase.firestore.FieldValue.increment(1),
         numSinAsignar: firebase.firestore.FieldValue.increment(-1)
@@ -2651,7 +2762,7 @@ async function guardarAsignacion(obraId, ventanaId, vRef, permitirVincular, orig
       if(btn){ btn.disabled = false; btn.textContent = labelOriginal; }
       return;
     }
-    await guardarVentanaNueva(obraId, ventanaId, vRef, datos);
+    await guardarVentanaNueva(obraId, ventanaId, vRef, datos, origen);
     return;
   }
 
@@ -2748,6 +2859,15 @@ function abrirCapturaRapida(obraId, ventanaId, vRef, etapasActivadas){
   document.getElementById("btnGuardarCaptura").addEventListener("click", guardarYCerrar);
   // "Continuar sin foto" también guarda la nota si el instalador escribió algo, pero nunca bloquea.
   document.getElementById("btnSaltarCaptura").addEventListener("click", guardarYCerrar);
+}
+
+// Campos que se guardan en la ventana cuando el instalador le asigna su número a un QR (reparto).
+function marcaReparto(){
+  return {
+    repartidaEn: new Date().toISOString(),
+    repartidaPor: nombreUsuario() || "—",
+    repartidaPorUid: currentUser ? currentUser.uid : null
+  };
 }
 
 // Registra en el histórico "eventos" quién hizo qué y cuándo (para notificaciones y estadísticas).
@@ -4306,6 +4426,172 @@ function generarExcelInformeInstalacion(tituloAmbito, periodoLabel, eventos, ven
   XLSX.utils.book_append_sheet(wb, ws, "Instalación");
   XLSX.writeFile(wb, `Informe_instalacion_${slug(tituloAmbito)}_${new Date().toISOString().slice(0,10)}.xlsx`);
   toast("Excel de instalación generado");
+}
+
+/* ============================================================
+   VENTANAS REPARTIDAS POR DÍA (asignación del número a cada QR)
+   ============================================================ */
+// Filtra las ventanas repartidas (las que tienen repartidaEn) al periodo elegido y las agrupa por
+// día en hora local. Devuelve también el desglose por instalador de cada día.
+function agruparRepartidas(ventanas, periodo, desde, hasta){
+  let label = "Todo el historial";
+  let items = ventanas.filter(v => v.repartidaEn);
+  if(periodo !== "todo"){
+    const r = calcularRangoInforme(periodo, desde, hasta);
+    const iniIso = r.ini.toISOString(), finIso = r.fin.toISOString();
+    items = items.filter(v => v.repartidaEn >= iniIso && v.repartidaEn < finIso);
+    label = r.label;
+  }
+  items = items.map(v => {
+    const f = new Date(v.repartidaEn);
+    const partes = [v.casa && `Casa ${v.casa}`, v.planta && `Pl ${v.planta}`, (v.numeroPlano || v.etiqueta) && `Nº ${v.numeroPlano || v.etiqueta}`].filter(Boolean);
+    return {
+      iso: v.repartidaEn,
+      dia: claveDia(v.repartidaEn),
+      fechaTxt: f.toLocaleDateString("es-ES"),
+      hora: f.toLocaleTimeString("es-ES", { hour:"2-digit", minute:"2-digit" }),
+      casa: v.casa || "", planta: v.planta || "", numero: v.numeroPlano || "", etiqueta: v.etiqueta || "",
+      referencia: v.referencia || "", ubicacion: v.ubicacion || "",
+      descripcion: partes.join(" · ") || "Ventana",
+      instalador: v.repartidaPor || "—"
+    };
+  }).sort((a,b)=> a.iso < b.iso ? -1 : a.iso > b.iso ? 1 : 0);
+
+  const porDia = new Map();
+  items.forEach(it => { if(!porDia.has(it.dia)) porDia.set(it.dia, []); porDia.get(it.dia).push(it); });
+  const dias = [];
+  porDia.forEach((lista, clave) => {
+    const conteo = new Map();
+    lista.forEach(it => conteo.set(it.instalador, (conteo.get(it.instalador)||0) + 1));
+    dias.push({
+      clave, items: lista,
+      legible: new Date(lista[0].iso).toLocaleDateString("es-ES", { weekday:"long", day:"2-digit", month:"2-digit", year:"numeric" }),
+      porInstalador: [...conteo.entries()].sort((a,b)=> b[1]-a[1])
+    });
+  });
+  return { label, items, dias };
+}
+
+function generarPdfRepartidas(tituloObra, res){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  if(!res.items.length){ toast("No hay ventanas repartidas en ese periodo"); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const margen = 15;
+  const anchoUtil = 210 - margen*2;
+  let y = margen;
+
+  doc.setFontSize(16); doc.setTextColor(20);
+  doc.text(`Ventanas repartidas — ${tituloObra}`, margen, y); y += 6;
+  doc.setFontSize(10); doc.setTextColor(120);
+  doc.text(res.label, margen, y); y += 5;
+  doc.text(`Generado: ${new Date().toLocaleString("es-ES")}`, margen, y); y += 10;
+
+  // --- Resumen ---
+  const totalInst = new Map();
+  res.items.forEach(it => totalInst.set(it.instalador, (totalInst.get(it.instalador)||0) + 1));
+  const media = Math.round((res.items.length / res.dias.length)*10)/10;
+  doc.setFontSize(12.5); doc.setTextColor(20);
+  doc.text("Resumen", margen, y); y += 6;
+  doc.setFontSize(9.5); doc.setTextColor(90);
+  doc.text(
+    `${res.items.length} ventana${res.items.length===1?"":"s"} repartida${res.items.length===1?"":"s"} · ` +
+    `${res.dias.length} día${res.dias.length===1?"":"s"} con reparto · media ${media.toLocaleString("es-ES")} por día`,
+    margen, y
+  );
+  y += 6;
+  if(totalInst.size){
+    const texto = [...totalInst.entries()].sort((a,b)=> b[1]-a[1]).map(([n,c])=> `${n} (${c})`).join("   ·   ");
+    const lineas = doc.splitTextToSize(texto, anchoUtil);
+    doc.text(lineas, margen, y);
+    y += lineas.length * 4.4 + 3;
+  }
+  doc.setDrawColor(200); doc.line(margen, y, 210-margen, y); y += 8;
+
+  // --- Tabla resumen por día ---
+  doc.setFontSize(11.5); doc.setTextColor(20);
+  doc.text("Por día", margen, y); y += 5;
+  const colsRes = [
+    { label: "Fecha", w: 62 }, { label: "Repartidas", w: 24 }, { label: "Instaladores", w: anchoUtil - 86 }
+  ];
+  let cx = margen; colsRes.forEach(c=>{ c.x = cx; cx += c.w; });
+  function cabecera(cols){
+    doc.setFillColor(241,245,243);
+    doc.rect(margen, y, anchoUtil, 7, "F");
+    doc.setFont("helvetica","bold"); doc.setFontSize(8.5); doc.setTextColor(70);
+    cols.forEach(c=> doc.text(truncarAncho(doc, c.label, c.w - 3), c.x + 1.5, y + 4.8));
+    doc.setFont("helvetica","normal");
+    y += 7;
+    doc.setDrawColor(210); doc.line(margen, y, 210-margen, y);
+  }
+  cabecera(colsRes);
+  const rowH = 6;
+  res.dias.forEach((d,i)=>{
+    if(y > 280){ doc.addPage(); y = margen; cabecera(colsRes); }
+    if(i % 2){ doc.setFillColor(249,250,249); doc.rect(margen, y, anchoUtil, rowH, "F"); }
+    doc.setFontSize(9); doc.setTextColor(40);
+    doc.text(truncarAncho(doc, d.legible, colsRes[0].w - 3), colsRes[0].x + 1.5, y + 4.2);
+    doc.text(String(d.items.length), colsRes[1].x + 1.5, y + 4.2);
+    doc.text(truncarAncho(doc, d.porInstalador.map(([n,c])=> `${n} ${c}`).join(", "), colsRes[2].w - 3), colsRes[2].x + 1.5, y + 4.2);
+    y += rowH;
+  });
+  doc.setFont("helvetica","bold"); doc.setFontSize(9); doc.setTextColor(20);
+  doc.text("Total", colsRes[0].x + 1.5, y + 4.6);
+  doc.text(String(res.items.length), colsRes[1].x + 1.5, y + 4.6);
+  doc.setFont("helvetica","normal");
+  y += rowH + 8;
+
+  // --- Detalle por día ---
+  if(y > 250){ doc.addPage(); y = margen; }
+  doc.setFontSize(11.5); doc.setTextColor(20);
+  doc.text("Detalle", margen, y); y += 6;
+  const colsDet = [
+    { label: "Hora", w: 14 }, { label: "Casa / Planta", w: 40 }, { label: "Nº ventana", w: 26 },
+    { label: "Referencia", w: 40 }, { label: "Instalador", w: anchoUtil - 120 }
+  ];
+  cx = margen; colsDet.forEach(c=>{ c.x = cx; cx += c.w; });
+  for(const d of res.dias){
+    if(y > 262){ doc.addPage(); y = margen; }
+    doc.setFontSize(10.5); doc.setTextColor(20);
+    doc.text(`${d.legible}  ·  ${d.items.length} ventana${d.items.length===1?"":"s"}`, margen, y); y += 4.5;
+    cabecera(colsDet);
+    let par = false;
+    for(const it of d.items){
+      if(y > 280){ doc.addPage(); y = margen; cabecera(colsDet); par = false; }
+      if(par){ doc.setFillColor(249,250,249); doc.rect(margen, y, anchoUtil, rowH, "F"); }
+      par = !par;
+      const casaPl = [it.casa && `Casa ${it.casa}`, it.planta && `Pl ${it.planta}`].filter(Boolean).join(" · ");
+      const vals = [it.hora, casaPl, it.numero || it.etiqueta, it.referencia, it.instalador];
+      doc.setFontSize(9); doc.setTextColor(40);
+      colsDet.forEach((c,k)=> doc.text(truncarAncho(doc, String(vals[k] ?? ""), c.w - 3), c.x + 1.5, y + 4.2));
+      y += rowH;
+    }
+    y += 5;
+  }
+  doc.save(`Ventanas_repartidas_${slug(tituloObra)}_${new Date().toISOString().slice(0,10)}.pdf`);
+  toast("PDF de ventanas repartidas generado");
+}
+
+function generarExcelRepartidas(tituloObra, res){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  if(!res.items.length){ toast("No hay ventanas repartidas en ese periodo"); return; }
+  const resumen = res.dias.map(d => ({
+    Fecha: new Date(d.items[0].iso).toLocaleDateString("es-ES"),
+    Día: new Date(d.items[0].iso).toLocaleDateString("es-ES", { weekday:"long" }),
+    Repartidas: d.items.length,
+    Instaladores: d.porInstalador.map(([n,c])=> `${n} (${c})`).join(", ")
+  }));
+  resumen.push({ Fecha: "TOTAL", Día: "", Repartidas: res.items.length, Instaladores: "" });
+  const detalle = res.items.map(it => ({
+    Fecha: it.fechaTxt, Hora: it.hora, Casa: it.casa, Planta: it.planta,
+    "Nº ventana": it.numero, Código: it.etiqueta, Referencia: it.referencia, Ubicación: it.ubicacion,
+    Instalador: it.instalador
+  }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(resumen), "Por día");
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(detalle), "Detalle");
+  XLSX.writeFile(wb, `Ventanas_repartidas_${slug(tituloObra)}_${new Date().toISOString().slice(0,10)}.xlsx`);
+  toast("Excel de ventanas repartidas generado");
 }
 
 function generarExcelCompleto(obraData, ventanas){
