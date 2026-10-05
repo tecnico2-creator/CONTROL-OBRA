@@ -160,6 +160,7 @@
     border:2.5px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4);
   }
   .mapa-marker.mm-pendiente::before{background:var(--rojo);}
+  .mapa-marker.mm-repartida::before{background:var(--naranja);}
   .mapa-marker.mm-terminada::before{background:var(--verde);}
   .mapa-marker.mm-vacia::before{background:#fff;border-style:dashed;border-color:var(--gris-400);}
   .mapa-marker .mm-label{
@@ -403,7 +404,7 @@ function totalPasosAplicables(ventanas){
 // las etapas se marcan en cascada (si una ventana está en "sellada" también está en "instalada").
 function estadoCasaParaMapa(casa, ventanas){
   const de = ventanas.filter(v => (v.casa||"") === casa);
-  if(!de.length) return { etapa: null, sinVentanas: true, incidenciaAbierta: false, pct: 0, completa: false };
+  if(!de.length) return { etapa: null, sinVentanas: true, incidenciaAbierta: false, pct: 0, completa: false, repartida: false };
   let etapaComun = null;
   // Una ventana sin composite cuenta como "aprobada" en ese punto de la cascada sin necesidad de
   // marcarlo, para que el cuello de botella pueda seguir avanzando hasta "terminada".
@@ -411,10 +412,14 @@ function estadoCasaParaMapa(casa, ventanas){
   const incidenciaAbierta = de.some(v => (v.incidencias||[]).some(i=>!i.resuelta));
   const checks = de.reduce((n,v)=> n + pasosCompletados(v.estado, etapasVentana(v)), 0);
   const pct = Math.round((checks/totalPasosAplicables(de))*100);
-  // Para el mapa solo importa si la casa está totalmente acabada (verde) o no (rojo) — sin colores
-  // intermedios por etapa.
+  // Para el mapa: verde = totalmente acabada, naranja = toda repartida pero sin acabar, rojo = aún
+  // le falta alguna ventana por repartir — sin colores intermedios por etapa.
   const completa = etapaComun === "terminada";
-  return { etapa: etapaComun, sinVentanas: false, incidenciaAbierta, pct, completa };
+  // Repartida (naranja): TODAS las ventanas de la casa ya tienen su número asignado a un QR (ver
+  // marcaReparto) — o, si ya tienen alguna etapa marcada, es que obviamente ya se repartieron
+  // (cubre las asignadas antes de que se guardara la fecha de reparto).
+  const repartida = de.every(v => v.repartidaEn || ETAPAS.some(e => v.estado && v.estado[e]));
+  return { etapa: etapaComun, sinVentanas: false, incidenciaAbierta, pct, completa, repartida };
 }
 
 // Una ventana tiene datos "avanzados" (casa/planta/referencia) cuando viene de una importación Excel/CSV
@@ -1607,7 +1612,9 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
     const marcadores = mapaActual.marcadores || [];
 
     const casasTotales = [...new Set(ventanas.map(v=>v.casa).filter(Boolean))].sort(compararNatural);
-    const casasSinMarcar = casasTotales.filter(c => !marcadores.some(m=>m.casa===c));
+    // Una casa solo puede tener UNA marca en toda la obra (en cualquiera de sus planos).
+    const marcasObra = mapas.flatMap(mp => (mp.marcadores||[]).map(m => ({ ...m, mapaId: mp.id, mapaNombre: mp.nombre || "Plano" })));
+    const casasSinMarcar = casasTotales.filter(c => !marcasObra.some(m => claveCasa(m.casa) === claveCasa(c)));
 
     cont.innerHTML = `
       <div class="card" style="padding:0;overflow:hidden;">
@@ -1637,7 +1644,7 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
             <img src="${esc(mapaActual.url)}" id="mapaImg" draggable="false" />
             ${marcadores.map(m=>{
               const info = estadoCasaParaMapa(m.casa, ventanas);
-              const colorClass = info.sinVentanas ? "mm-vacia" : (info.completa ? "mm-terminada" : "mm-pendiente");
+              const colorClass = info.sinVentanas ? "mm-vacia" : (info.completa ? "mm-terminada" : (info.repartida ? "mm-repartida" : "mm-pendiente"));
               return `
               <div class="mapa-marker ${colorClass}" data-mid="${esc(m.id)}" data-casa="${esc(m.casa)}" style="left:${(m.x*100).toFixed(2)}%;top:${(m.y*100).toFixed(2)}%;">
                 ${info.incidenciaAbierta ? `<span class="mm-alerta">⚠️</span>` : ""}
@@ -1655,7 +1662,7 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
       </div>
       ${admin && casasSinMarcar.length ? `
         <div class="card" style="margin-top:14px;">
-          <div class="section-title">Casas de este plano todavía sin marcar</div>
+          <div class="section-title">Casas todavía sin marcar en ningún plano</div>
           <p class="muted" style="font-size:12.5px;margin-top:4px;">${casasSinMarcar.map(esc).join(", ")}</p>
         </div>
       ` : ""}
@@ -1805,13 +1812,13 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
         return;
       }
       if(markerEl){
-        abrirEditarMarcadorMapa(obraId, mapaActual.id, marcadores, markerEl.dataset.mid);
+        abrirEditarMarcadorMapa(obraId, mapaActual.id, marcadores, markerEl.dataset.mid, marcasObra);
         return;
       }
       const rect = document.getElementById("mapaImg").getBoundingClientRect();
       const x = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
       const y = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height));
-      abrirNuevoMarcadorMapa(obraId, mapaActual.id, casasTotales, marcadores, x, y);
+      abrirNuevoMarcadorMapa(obraId, mapaActual.id, casasTotales.filter(c => !marcasObra.some(m => claveCasa(m.casa) === claveCasa(c))), marcadores, x, y, marcasObra);
     });
 
     if(admin){
@@ -3175,7 +3182,21 @@ function nuevoIdMarcador(){
   return "m" + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
 }
 
-function abrirNuevoMarcadorMapa(obraId, mapaId, casasExistentes, marcadoresActuales, x, y){
+// Clave para comparar nombres de casa sin que importen mayúsculas, espacios ni tildes ("a201 " = "A201").
+function claveCasa(c){ return normalizarCabecera(c).replace(/\s+/g, ""); }
+
+// Si la casa ya tiene marca en algún plano de la obra (salvo la que se está editando), devuelve esa marca.
+function marcaDuplicadaDeCasa(casa, marcasObra, ignorarMid){
+  const k = claveCasa(casa);
+  return (marcasObra || []).find(m => m.id !== ignorarMid && claveCasa(m.casa) === k) || null;
+}
+
+function avisoCasaRepetida(casa, dup, mapaId){
+  const donde = dup.mapaId === mapaId ? "en este plano" : `en el plano "${dup.mapaNombre}"`;
+  toast(`La casa ${casa} ya está marcada ${donde}. No se puede repetir.`);
+}
+
+function abrirNuevoMarcadorMapa(obraId, mapaId, casasExistentes, marcadoresActuales, x, y, marcasObra){
   openModal(`
     <h3>Nueva marca en el plano</h3>
     <label class="field"><span>¿Qué casa es?</span>
@@ -3187,13 +3208,15 @@ function abrirNuevoMarcadorMapa(obraId, mapaId, casasExistentes, marcadoresActua
   document.getElementById("btnGuardarMarcador").addEventListener("click", async ()=>{
     const casa = document.getElementById("inpCasaMarcador").value.trim();
     if(!casa){ toast("Escribe la casa"); return; }
+    const dup = marcaDuplicadaDeCasa(casa, marcasObra, null);
+    if(dup){ avisoCasaRepetida(casa, dup, mapaId); return; }
     const marcadores = [...marcadoresActuales, { id: nuevoIdMarcador(), casa, x, y }];
     closeModal();
     await guardarMarcadoresMapa(obraId, mapaId, marcadores);
   });
 }
 
-function abrirEditarMarcadorMapa(obraId, mapaId, marcadoresActuales, mid){
+function abrirEditarMarcadorMapa(obraId, mapaId, marcadoresActuales, mid, marcasObra){
   const m = marcadoresActuales.find(mm=>mm.id===mid);
   if(!m) return;
   openModal(`
@@ -3205,6 +3228,8 @@ function abrirEditarMarcadorMapa(obraId, mapaId, marcadoresActuales, mid){
   document.getElementById("btnGuardarMarcadorEd").addEventListener("click", async ()=>{
     const casa = document.getElementById("inpCasaMarcadorEd").value.trim();
     if(!casa){ toast("Escribe la casa"); return; }
+    const dup = marcaDuplicadaDeCasa(casa, marcasObra, mid);
+    if(dup){ avisoCasaRepetida(casa, dup, mapaId); return; }
     const marcadores = marcadoresActuales.map(mm=> mm.id===mid ? {...mm, casa} : mm);
     closeModal();
     await guardarMarcadoresMapa(obraId, mapaId, marcadores);
