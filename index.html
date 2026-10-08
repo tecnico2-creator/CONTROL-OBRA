@@ -418,7 +418,7 @@ function estadoCasaParaMapa(casa, ventanas){
   // Repartida (naranja): TODAS las ventanas de la casa ya tienen su número asignado a un QR (ver
   // marcaReparto) — o, si ya tienen alguna etapa marcada, es que obviamente ya se repartieron
   // (cubre las asignadas antes de que se guardara la fecha de reparto).
-  const repartida = de.every(v => v.repartidaEn || ETAPAS.some(e => v.estado && v.estado[e]));
+  const repartida = de.every(estaRepartida);
   return { etapa: etapaComun, sinVentanas: false, incidenciaAbierta, pct, completa, repartida };
 }
 
@@ -426,6 +426,18 @@ function estadoCasaParaMapa(casa, ventanas){
 function tieneDatosAvanzados(v){ return !!(v.casa || v.planta || v.referencia || v.numeroPlano); }
 
 // Etiqueta corta para las tarjetas y el QR: el número del plano si existe, si no el V0001 interno
+// Una ventana cuenta como "repartida" si se le ha marcado el reparto (repartidaEn) o si ya tiene
+// alguna etapa de instalación marcada (no se puede instalar lo que no se ha repartido).
+function estaRepartida(v){
+  return !!(v && (v.repartidaEn || ETAPAS.some(e => v.estado && v.estado[e])));
+}
+
+// Un código QR genérico (G0001, G0002…) se reconoce por su identificador. Estos códigos son físicos
+// (pegatinas ya impresas), así que al eliminar su ventana NO se borran: se liberan para reutilizarlos.
+function esQrGenerico(v, id){
+  return /^G\d+$/.test(String(id || (v && v.etiqueta) || ""));
+}
+
 function etiquetaCorta(v){ return (v.numeroPlano && String(v.numeroPlano).trim()) || v.etiqueta; }
 
 // Línea descriptiva para la pantalla de la ventana: "Casa 12 · Planta 2 · Ref. PVC-120x150"
@@ -2203,6 +2215,32 @@ async function eliminarObra(obraId, obraData){
   }catch(err){ toast("Error eliminando: " + err.message); }
 }
 
+// Campos que dejan un documento de ventana igual que un QR genérico recién creado (sin usar).
+function camposQrLiberado(){
+  return {
+    asignada: false,
+    casa: "", planta: "", numeroPlano: "", referencia: "", ubicacion: "",
+    estado: estadoVacio(), llevaComposite: true,
+    notas: [], fotos: [], incidencias: [], entrega: null,
+    repartidaEn: null, repartidaPor: null, repartidaPorUid: null,
+    aliasTo: null,
+    actualizadoEn: firebase.firestore.FieldValue.serverTimestamp()
+  };
+}
+
+// Rutas de Storage (fotos, fotos de incidencias, firma) que cuelgan de un documento de ventana.
+function rutasStorageVentana(d){
+  const r = [];
+  (d.fotos || []).forEach(f=>{ if(f && f.path) r.push(f.path); });
+  (d.incidencias || []).forEach(i=>{ if(i && i.fotoPath) r.push(i.fotoPath); });
+  if(d.entrega && d.entrega.firmaPath) r.push(d.entrega.firmaPath);
+  return r;
+}
+
+// Eliminar una ventana. Si viene de un QR genérico (G0001…), el QR NO se destruye: se "libera" y
+// vuelve a quedar como un código sin usar, listo para asignarle otra referencia (la pegatina física
+// sigue pegada en la ventana). Los códigos que habían quedado vinculados a ella (alias) también se
+// liberan. Las ventanas que no son un QR genérico (p.ej. importadas de Excel) se borran del todo.
 async function eliminarVentana(obraId, ventanaId, v){
   const obraRef = db.collection("obras").doc(obraId);
   let aliasSnap;
@@ -2210,21 +2248,40 @@ async function eliminarVentana(obraId, ventanaId, v){
     aliasSnap = await obraRef.collection("ventanas").where("aliasTo","==",ventanaId).get();
   }catch(e){ aliasSnap = { docs: [] }; }
   const nAlias = aliasSnap.docs.length;
-  const aviso = nAlias
-    ? `¿Eliminar la ventana ${etiquetaCorta(v)}? También se eliminarán ${nAlias} código${nAlias===1?"":"s"} QR que habían quedado vinculados a ella. Se perderá todo su avance, fotos, notas, incidencias y entrega firmada. Esta acción no se puede deshacer.`
-    : `¿Eliminar la ventana ${etiquetaCorta(v)}? Se perderá todo su avance, fotos, notas, incidencias y entrega firmada. Esta acción no se puede deshacer.`;
+  const liberaPropio = esQrGenerico(v, ventanaId);
+  const aliasLiberar = aliasSnap.docs.filter(d => esQrGenerico(d.data(), d.id));
+  const aliasBorrar = aliasSnap.docs.filter(d => !esQrGenerico(d.data(), d.id));
+  const nombre = etiquetaCorta(v);
+  const codigos = [];
+  if(liberaPropio) codigos.push(ventanaId);
+  aliasLiberar.forEach(d => codigos.push(d.id));
+
+  let aviso = `¿Eliminar la ventana ${nombre}? Se perderá su avance, fotos, notas, incidencias y entrega firmada.`;
+  if(nAlias && aliasBorrar.length) aviso += ` También se eliminarán ${aliasBorrar.length} código${aliasBorrar.length===1?"":"s"} que habían quedado vinculados a ella.`;
+  if(codigos.length){
+    aviso += ` El código QR ${codigos.join(", ")} NO se borra: queda libre para poder asignarle otra referencia.`;
+  }
+  aviso += ` Esta acción no se puede deshacer.`;
   if(!confirmar(aviso)) return;
   toast("Eliminando ventana…");
   try{
+    // Archivos de Storage (fotos y firma) de la ventana y de sus alias, sin repetir rutas.
+    const rutas = new Set(rutasStorageVentana(v));
+    aliasSnap.docs.forEach(d => rutasStorageVentana(d.data()).forEach(r => rutas.add(r)));
+
     const batch = db.batch();
-    batch.delete(obraRef.collection("ventanas").doc(ventanaId));
-    aliasSnap.docs.forEach(d=> batch.delete(d.ref));
+    const refVentana = obraRef.collection("ventanas").doc(ventanaId);
+    if(liberaPropio) batch.update(refVentana, camposQrLiberado());
+    else batch.delete(refVentana);
+    aliasLiberar.forEach(d => batch.update(d.ref, camposQrLiberado()));
+    aliasBorrar.forEach(d => batch.delete(d.ref));
     await batch.commit();
+    rutas.forEach(r => { borrarArchivoStorage(r); });
     try{
       const snap = await obraRef.collection("ventanas").get();
       await recalcularProgresoObra(obraId, snap.docs.map(d=>({id:d.id, ...d.data()})));
     }catch(e){ /* no crítico */ }
-    toast("Ventana eliminada");
+    toast(codigos.length ? `Ventana eliminada · QR ${codigos.join(", ")} liberado${codigos.length===1?"":"s"}` : "Ventana eliminada");
     navegar(`#/obra/${obraId}`);
   }catch(err){ toast("Error eliminando: " + err.message); }
 }
@@ -2261,6 +2318,7 @@ function renderVentana(obraId, ventanaId){
   const vRef = obraRef.collection("ventanas").doc(ventanaId);
   let obraNombre = "";
   let ultimoV = null;
+  let recreandoQr = false; // evita recrear dos veces un QR borrado mientras llega la respuesta
   let fotoIncidenciaLista = null; // foto elegida para la incidencia que se está redactando, hasta que se guarda
   let documentosFabricacion = []; // partes de fabricación de la obra (se filtran por código más abajo)
 
@@ -2286,6 +2344,21 @@ function renderVentana(obraId, ventanaId){
           </div>
         </div>
         ${descripcionVentana(v) ? `<p class="muted" style="margin-top:2px;">${esc(descripcionVentana(v))}</p>` : ""}
+        ${(()=>{
+          const rep = estaRepartida(v);
+          const iniciada = !v.repartidaEn && rep; // sin marca de reparto, pero ya con etapas marcadas
+          const detalle = v.repartidaEn
+            ? ` · ${esc(fechaCorta(v.repartidaEn))}${v.repartidaPor ? " · " + esc(v.repartidaPor) : ""}`
+            : (iniciada ? " · instalación iniciada" : "");
+          const hayEtapa = ETAPAS.some(e => v.estado && v.estado[e]);
+          return `
+        <div id="estadoReparto" data-repartida="${rep?1:0}" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;">
+          <span style="display:inline-block;padding:4px 10px;border-radius:999px;font-weight:700;font-size:13px;${rep ? "background:#fff1e0;color:#b45f06;border:1px solid #f0b36b;" : "background:#fdecea;color:var(--rojo);border:1px solid #f1a9a0;"}">${rep ? "📦 Repartida" : "⏳ No repartida"}</span>
+          <span class="muted" style="font-size:12px;">${detalle.replace(/^ · /,"")}</span>
+          ${!rep ? `<button class="link-btn" id="btnMarcarRepartida" type="button">Marcar como repartida</button>` : ""}
+          ${v.repartidaEn && !hayEtapa ? `<button class="link-btn" id="btnQuitarRepartida" type="button" style="color:var(--rojo);">Quitar</button>` : ""}
+        </div>`;
+        })()}
         <p class="muted" style="margin-top:6px;">Marca cada etapa según avance la instalación</p>
         <div class="field" style="margin-top:10px;margin-bottom:0;">
           <span>¿Esta ventana lleva composite?</span>
@@ -2415,6 +2488,20 @@ function renderVentana(obraId, ventanaId){
         db.collection("obras").doc(obraId).update({ numSinComposite: firebase.firestore.FieldValue.increment(nuevoValor ? -1 : 1) }).catch(()=>{});
       }catch(err){ toast("Error guardando: " + err.message); }
     }
+    const btnMarcarRep = document.getElementById("btnMarcarRepartida");
+    if(btnMarcarRep) btnMarcarRep.addEventListener("click", async ()=>{
+      try{
+        await vRef.update({ ...marcaReparto(), actualizadoEn: firebase.firestore.FieldValue.serverTimestamp() });
+        toast("Marcada como repartida");
+      }catch(err){ toast("Error guardando: " + err.message); }
+    });
+    const btnQuitarRep = document.getElementById("btnQuitarRepartida");
+    if(btnQuitarRep) btnQuitarRep.addEventListener("click", async ()=>{
+      try{
+        await vRef.update({ repartidaEn: null, repartidaPor: null, repartidaPorUid: null, actualizadoEn: firebase.firestore.FieldValue.serverTimestamp() });
+        toast("Marcada como no repartida");
+      }catch(err){ toast("Error guardando: " + err.message); }
+    });
     document.getElementById("btnLlevaCompositeSi").addEventListener("click", ()=> cambiarLlevaComposite(true));
     document.getElementById("btnLlevaCompositeNo").addEventListener("click", ()=> cambiarLlevaComposite(false));
     document.getElementById("btnVolverObra").addEventListener("click", ()=> navegar(`#/obra/${obraId}`));
@@ -2552,7 +2639,28 @@ function renderVentana(obraId, ventanaId){
   });
 
   const unsub = vRef.onSnapshot({ includeMetadataChanges: true }, doc=>{
-    if(!doc.exists){ toast("Esta ventana ya no existe"); navegar(`#/obra/${obraId}`); return; }
+    if(!doc.exists){
+      // Un QR genérico (G0001…) es una pegatina física que no se puede perder: si su ventana se borró
+      // del todo (como pasaba antes de poder "liberar" el código), al escanearlo se vuelve a crear
+      // como código libre, listo para asignarle una referencia nueva.
+      if(esQrGenerico(null, ventanaId)){
+        if(doc.metadata && doc.metadata.fromCache) return; // espera a la respuesta del servidor
+        if(recreandoQr) return;
+        recreandoQr = true;
+        (async ()=>{
+          try{
+            const o = await obraRef.get();
+            if(!o.exists){ toast("Esta obra ya no existe"); navegar("#/"); return; }
+            const n = parseInt(String(ventanaId).replace(/\D/g,""), 10) || 0;
+            await vRef.set({ numero: n, etiqueta: ventanaId, ...camposQrLiberado() });
+            obraRef.update({ numSinAsignar: firebase.firestore.FieldValue.increment(1) }).catch(()=>{});
+            toast("Código " + ventanaId + " libre: ya puedes asignarle una ventana");
+          }catch(err){ toast("Esta ventana ya no existe"); navegar(`#/obra/${obraId}`); }
+        })();
+        return;
+      }
+      toast("Esta ventana ya no existe"); navegar(`#/obra/${obraId}`); return;
+    }
     const data = doc.data();
     marcarPendiente(doc.metadata);
     // Este código QR quedó vinculado a otra ventana ya existente (ver guardarAsignacion):
