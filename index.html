@@ -1608,7 +1608,7 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
           <div class="empty">Todavía no hay ningún plano de esta promoción.</div>
           ${admin ? `
             <button class="btn btn-primary btn-block" id="btnSubirMapa" style="margin-top:10px;">📤 Subir plano de la promoción</button>
-            <p class="muted" style="margin-top:8px;">Sube una imagen (foto o captura de pantalla) del plano — aquí no se admite PDF directamente, si el plano solo lo tienes en PDF hazle antes una captura. Si la obra tiene varias plantas o bloques, puedes subir un plano distinto para cada uno.</p>
+            <p class="muted" style="margin-top:8px;">Sube el plano como imagen (JPG/PNG) o PDF — si es PDF se usa su primera página. Si la obra tiene varias plantas o bloques, puedes subir un plano distinto para cada uno.</p>
           ` : `<div class="empty">La oficina todavía no ha subido ningún plano de esta obra.</div>`}
         </div>
       `;
@@ -1670,7 +1670,7 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
             ${mapaZoom > 1 ? `<button type="button" class="mapa-zoom-btn" id="btnMapaZoomReset" title="Restablecer">↺</button>` : ""}
           </div>
         </div>
-        ${admin ? `<input type="file" id="inpMapa2" accept="image/*" style="display:none;" />` : ""}
+        ${admin ? `<input type="file" id="inpMapa2" accept="image/*,.pdf" style="display:none;" />` : ""}
       </div>
       ${admin && casasSinMarcar.length ? `
         <div class="card" style="margin-top:14px;">
@@ -3196,12 +3196,50 @@ async function borrarPlano(obraId, planoId){
 // Storage no puede convertir su primera página a imagen como hacía Cloudinary. Si el plano está en
 // PDF, hay que hacerle antes una captura de pantalla o exportarlo como imagen.
 
+// Si el plano llega en PDF, se convierte su primera página en imagen (JPG) con pdf.js en el propio
+// navegador, porque el mapa se pinta en un <img>. Si ya es imagen, se devuelve tal cual.
+async function cargarPdfJs(){
+  if(window.pdfjsLib && window.__pdfWorkerUrl) return window.pdfjsLib;
+  if(!window.pdfjsLib){
+    await new Promise((ok, ko)=>{
+      const sc = document.createElement("script");
+      sc.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+      sc.onload = ok; sc.onerror = ()=> ko(new Error("No se pudo cargar el lector de PDF"));
+      document.head.appendChild(sc);
+    });
+  }
+  if(!window.__pdfWorkerUrl){
+    const txt = await (await fetch("https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js")).text();
+    window.__pdfWorkerUrl = URL.createObjectURL(new Blob([txt], { type: "text/javascript" }));
+  }
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc = window.__pdfWorkerUrl;
+  return window.pdfjsLib;
+}
+async function pdfAImagen(file, maxLado = 2600){
+  const esPdf = /\.pdf$/i.test(file.name||"") || file.type === "application/pdf";
+  if(!esPdf) return file;
+  const pdfjs = await cargarPdfJs();
+  const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
+  const page = await pdf.getPage(1);
+  const base = page.getViewport({ scale: 1 });
+  const escala = Math.min(4, maxLado / Math.max(base.width, base.height));
+  const vp = page.getViewport({ scale: escala });
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(vp.width); canvas.height = Math.round(vp.height);
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvasContext: ctx, viewport: vp }).promise;
+  const blob = await new Promise(r => canvas.toBlob(r, "image/jpeg", 0.88));
+  if(!blob) throw new Error("No se pudo convertir el PDF a imagen");
+  return new File([blob], (file.name || "plano").replace(/\.\w+$/, "") + ".jpg", { type: "image/jpeg" });
+}
+
 // Devuelve el id del nuevo plano (o null si falló), para que quien lo llame pueda dejarlo
 // seleccionado automáticamente.
 async function subirMapaObra(obraId, file, nombre){
   toast("Subiendo plano…");
   try{
-    const comprimida = await comprimirImagen(file, 2200, 0.85);
+    const comprimida = await comprimirImagen(await pdfAImagen(file), 2200, 0.85);
     const { url, path } = await subirArchivoStorage(comprimida, `obras/${obraId}/mapas`);
     const ref = await db.collection("obras").doc(obraId).collection("mapas").add({
       nombre: nombre || "Plano",
@@ -3221,8 +3259,8 @@ function abrirNuevoPlanoMapa(obraId, mapasActuales, onCreado){
     <label class="field"><span>Nombre (planta, bloque...)</span>
       <input type="text" id="inpNombreMapa" value="${esc(nombreSugerido)}" placeholder="Ej: Planta 1, Bloque A..." autofocus />
     </label>
-    <label class="field"><span>Imagen del plano (JPG o PNG)</span>
-      <input type="file" id="inpArchivoMapa" accept="image/*" />
+    <label class="field"><span>Plano (JPG, PNG o PDF)</span>
+      <input type="file" id="inpArchivoMapa" accept="image/*,.pdf" />
     </label>
     <button class="btn btn-primary btn-block" id="btnSubirNuevoMapa">Subir</button>
   `);
@@ -3242,7 +3280,7 @@ async function cambiarImagenMapa(obraId, mapaId, file){
   try{
     const ref = db.collection("obras").doc(obraId).collection("mapas").doc(mapaId);
     const prevSnap = await ref.get();
-    const comprimida = await comprimirImagen(file, 2200, 0.85);
+    const comprimida = await comprimirImagen(await pdfAImagen(file), 2200, 0.85);
     const { url, path } = await subirArchivoStorage(comprimida, `obras/${obraId}/mapas`);
     await ref.update({ url, path });
     const prevData = prevSnap.data();
