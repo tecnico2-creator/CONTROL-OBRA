@@ -3215,21 +3215,23 @@ async function cargarPdfJs(){
   window.pdfjsLib.GlobalWorkerOptions.workerSrc = window.__pdfWorkerUrl;
   return window.pdfjsLib;
 }
-async function pdfAImagen(file, maxLado = 2600){
+async function pdfAImagen(file, maxLado = 4800){
   const esPdf = /\.pdf$/i.test(file.name||"") || file.type === "application/pdf";
   if(!esPdf) return file;
   const pdfjs = await cargarPdfJs();
   const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
   const page = await pdf.getPage(1);
   const base = page.getViewport({ scale: 1 });
-  const escala = Math.min(4, maxLado / Math.max(base.width, base.height));
+  let escala = Math.min(8, maxLado / Math.max(base.width, base.height));
+  const px = base.width * base.height * escala * escala;
+  if(px > 16e6) escala *= Math.sqrt(16e6 / px); // tope de píxeles para que el móvil no se quede sin memoria
   const vp = page.getViewport({ scale: escala });
   const canvas = document.createElement("canvas");
   canvas.width = Math.round(vp.width); canvas.height = Math.round(vp.height);
   const ctx = canvas.getContext("2d");
   ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, canvas.width, canvas.height);
   await page.render({ canvasContext: ctx, viewport: vp }).promise;
-  const blob = await new Promise(r => canvas.toBlob(r, "image/jpeg", 0.88));
+  const blob = await new Promise(r => canvas.toBlob(r, "image/jpeg", 0.92));
   if(!blob) throw new Error("No se pudo convertir el PDF a imagen");
   return new File([blob], (file.name || "plano").replace(/\.\w+$/, "") + ".jpg", { type: "image/jpeg" });
 }
@@ -3239,7 +3241,7 @@ async function pdfAImagen(file, maxLado = 2600){
 async function subirMapaObra(obraId, file, nombre){
   toast("Subiendo plano…");
   try{
-    const comprimida = await comprimirImagen(await pdfAImagen(file), 2200, 0.85);
+    const comprimida = await comprimirImagen(await pdfAImagen(file), 5000, 0.9);
     const { url, path } = await subirArchivoStorage(comprimida, `obras/${obraId}/mapas`);
     const ref = await db.collection("obras").doc(obraId).collection("mapas").add({
       nombre: nombre || "Plano",
@@ -3280,7 +3282,7 @@ async function cambiarImagenMapa(obraId, mapaId, file){
   try{
     const ref = db.collection("obras").doc(obraId).collection("mapas").doc(mapaId);
     const prevSnap = await ref.get();
-    const comprimida = await comprimirImagen(await pdfAImagen(file), 2200, 0.85);
+    const comprimida = await comprimirImagen(await pdfAImagen(file), 5000, 0.9);
     const { url, path } = await subirArchivoStorage(comprimida, `obras/${obraId}/mapas`);
     await ref.update({ url, path });
     const prevData = prevSnap.data();
