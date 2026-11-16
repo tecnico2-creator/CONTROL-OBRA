@@ -650,7 +650,7 @@ function route(){
   else if(parts[0] === "usuarios"){ if(!esAdmin()){ navegar("#/"); return; } setTopbar("Usuarios","Cuentas de tu equipo",true); renderUsuarios(); }
   else if(parts[0] === "estadisticas"){ if(!esAdmin()){ navegar("#/"); return; } setTopbar("Estadísticas","Actividad por instalador",true); renderEstadisticas(); }
   else if(parts[0] === "obra" && parts[1]){ renderObraDetalle(parts[1], parts[2], parts[3] ? decodeURIComponent(parts[3]) : null); }
-  else if(parts[0] === "ventana" && parts[1] && parts[2]){ renderVentana(parts[1], parts[2]); }
+  else if(parts[0] === "ventana" && parts[1] && parts[2]){ (async () => { let real = parts[1]; try{ const d = await db.collection("obras").doc(real).get(); if(!d.exists){ const q = await db.collection("obras").where("idsAntiguos", "array-contains", real).limit(1).get(); if(!q.empty) real = q.docs[0].id; } }catch(e){} if(real !== parts[1]) navegar("#/ventana/" + real + "/" + parts[2]); else renderVentana(parts[1], parts[2]); })(); }
   else if(parts[0] === "scan"){ setTopbar("Escanear QR","",true); renderScanner(); }
   else { setTopbar(NOMBRE_APP,"Control de instalación",false); renderListaObras(); }
 }
