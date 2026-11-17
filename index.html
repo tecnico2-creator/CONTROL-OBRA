@@ -623,7 +623,7 @@ function traducirErrorAuth(err){
    #/obra/{obraId}/stats           -> detalle de obra (tab estadísticas)
    #/obra/{obraId}/repartidas      -> detalle de obra (tab ventanas repartidas por día)
    #/ventana/{obraId}/{ventanaId}  -> detalle de ventana
-   #/scan                          -> escáner de QR
+   #/scan[/obraId]                 -> escáner de QR (con la obra, permite asignar un QR a mano)
    ============================================================ */
 function navegar(hash){ location.hash = hash; }
 
@@ -651,7 +651,7 @@ function route(){
   else if(parts[0] === "estadisticas"){ if(!esAdmin()){ navegar("#/"); return; } setTopbar("Estadísticas","Actividad por instalador",true); renderEstadisticas(); }
   else if(parts[0] === "obra" && parts[1]){ renderObraDetalle(parts[1], parts[2], parts[3] ? decodeURIComponent(parts[3]) : null); }
   else if(parts[0] === "ventana" && parts[1] && parts[2]){ (async () => { let real = parts[1]; try{ const d = await db.collection("obras").doc(real).get(); if(!d.exists){ const q = await db.collection("obras").where("idsAntiguos", "array-contains", real).limit(1).get(); if(!q.empty) real = q.docs[0].id; } }catch(e){} if(real !== parts[1]) navegar("#/ventana/" + real + "/" + parts[2]); else renderVentana(parts[1], parts[2]); })(); }
-  else if(parts[0] === "scan"){ setTopbar("Escanear QR","",true); renderScanner(); }
+  else if(parts[0] === "scan"){ setTopbar("Escanear QR","",true); renderScanner(parts[1] || null); }
   else { setTopbar(NOMBRE_APP,"Control de instalación",false); renderListaObras(); }
 }
 
@@ -1225,7 +1225,7 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
         ${tabsHtml}
         <div id="tabContent"></div>
       `;
-      document.getElementById("btnScan").addEventListener("click", ()=> navegar(`#/scan`));
+      document.getElementById("btnScan").addEventListener("click", ()=> navegar(`#/scan/${obraId}`));
       document.querySelectorAll(".tabs button").forEach(b=>{
         b.addEventListener("click", ()=> navegar(`#/obra/${obraId}/${b.dataset.tab}`));
       });
@@ -1313,7 +1313,7 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
       <div id="tabContent"></div>
     `;
 
-    document.getElementById("btnScan").addEventListener("click", ()=> navegar(`#/scan`));
+    document.getElementById("btnScan").addEventListener("click", ()=> navegar(`#/scan/${obraId}`));
     document.getElementById("btnAddVentanas").addEventListener("click", ()=> abrirAddVentanas(obraId, total));
     document.getElementById("btnImportarExcel").addEventListener("click", ()=> abrirImportarExcel(obraId, maxNumero+1));
     document.getElementById("btnGenerarGenericas").addEventListener("click", ()=> abrirGenerarGenericas(obraId, obraData, maxNumero+1));
@@ -3717,15 +3717,60 @@ async function abrirNotificaciones(){
    ============================================================ */
 let html5QrInstance = null;
 
-function renderScanner(){
+function renderScanner(obraIdCtx){
   $app().innerHTML = `
     <div class="card">
       <div id="reader"></div>
       <p class="muted center" style="margin-top:12px;">Apunta la cámara al código QR pegado en la ventana.</p>
       <button class="link-btn" id="btnManual" style="display:block;margin:8px auto 0;">¿No puedes escanear? Elige la obra manualmente</button>
     </div>
+    <div class="card" id="cardQrManual">
+      <h3 style="font-size:16px;margin-bottom:4px;">✍️ Asignar QR manualmente</h3>
+      <p class="muted" style="margin-bottom:12px;">¿El QR está dañado o el móvil no lo lee? Escribe el código que lleva impreso (por ejemplo G1320) y el número de plano de la ventana: el QR queda asignado a ella.</p>
+      <div id="qrManualObra"></div>
+      <label class="field"><span>Código del QR</span><input type="text" id="inpQrManualCodigo" placeholder="Ej: G1320" autocapitalize="characters" autocomplete="off" /></label>
+      <label class="field"><span>Número de plano</span><input type="text" id="inpQrManualNumero" placeholder="Ej: 809" autocomplete="off" /></label>
+      <label class="field"><span>Casa (opcional, si el número se repite en varias casas)</span><input type="text" id="inpQrManualCasa" placeholder="Ej: D223" autocomplete="off" /></label>
+      <button class="btn btn-primary btn-block" id="btnQrManualAsignar">Asignar QR</button>
+    </div>
   `;
   document.getElementById("btnManual").addEventListener("click", ()=> navegar("#/"));
+
+  // Obra de destino del código manual: la obra desde la que se abrió el escáner; si se abrió desde la
+  // pantalla de inicio (sin obra), se deja elegir en un desplegable.
+  let obraManualId = obraIdCtx || null;
+  const cajaObra = document.getElementById("qrManualObra");
+  if(obraManualId){
+    db.collection("obras").doc(obraManualId).get().then(d=>{
+      if(d.exists) cajaObra.innerHTML = `<p style="margin-bottom:10px;"><strong>Obra:</strong> ${esc(d.data().nombre||"Obra")}</p>`;
+    }).catch(()=>{});
+  }else{
+    cajaObra.innerHTML = `<label class="field"><span>Obra</span><select id="selQrManualObra"><option value="">Cargando obras…</option></select></label>`;
+    db.collection("obras").get().then(snap=>{
+      const sel = document.getElementById("selQrManualObra");
+      if(!sel) return;
+      const obras = snap.docs.map(d=>({id:d.id, nombre:d.data().nombre||"Obra"}));
+      sel.innerHTML = `<option value="">Elige la obra…</option>` + obras.map(o=>`<option value="${esc(o.id)}">${esc(o.nombre)}</option>`).join("");
+      if(obras.length === 1) sel.value = obras[0].id;
+    }).catch(()=>{ const sel = document.getElementById("selQrManualObra"); if(sel) sel.innerHTML = `<option value="">No se pudieron cargar las obras</option>`; });
+  }
+  document.getElementById("btnQrManualAsignar").addEventListener("click", async ()=>{
+    const sel = document.getElementById("selQrManualObra");
+    const obraId = obraManualId || (sel ? sel.value : "");
+    if(!obraId){ toast("Elige la obra"); return; }
+    const btn = document.getElementById("btnQrManualAsignar");
+    const label = btn.textContent;
+    btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Asignando…`;
+    try{
+      await asignarQrManual(
+        obraId,
+        document.getElementById("inpQrManualCodigo").value,
+        document.getElementById("inpQrManualNumero").value.trim(),
+        document.getElementById("inpQrManualCasa").value.trim()
+      );
+    }catch(err){ toast("Error: " + err.message); }
+    btn.disabled = false; btn.textContent = label;
+  });
 
   html5QrInstance = new Html5Qrcode("reader");
   const config = { fps: 10, qrbox: { width: 240, height: 240 } };
@@ -3744,6 +3789,68 @@ function renderScanner(){
     document.getElementById("reader").innerHTML =
       `<div class="empty" style="color:#fff;">No se pudo acceder a la cámara.<br/>Comprueba los permisos del navegador.<br/><small>${esc(String(err))}</small></div>`;
   });
+}
+
+// "G1320", "g 1320", "1320" o la URL completa del QR -> id del documento de la ventana ("G1320").
+function normalizarCodigoQr(txt){
+  const ruta = extraerRutaVentana(txt);
+  if(ruta) return ruta.ventanaId;
+  const m = String(txt || "").trim().toUpperCase().match(/^G?\s*0*(\d{1,6})$/);
+  return m ? etiquetaGenerica(parseInt(m[1], 10)) : null;
+}
+
+// Asigna a mano un QR (dañado o que el móvil no consigue leer): se indica el código impreso y el
+// número de plano (y opcionalmente la casa). Reutiliza la misma lógica que al escanear: si el número
+// coincide con una ventana ya existente (importada del Excel) se vincula el QR a ella; si coincide
+// con varias, se elige cuál; si no hay ninguna, se crea la ventana nueva con ese número.
+async function asignarQrManual(obraId, codigoTxt, numeroPlano, casa){
+  const id = normalizarCodigoQr(codigoTxt);
+  if(!id){ toast("Escribe el código del QR, por ejemplo G1320"); return; }
+  if(!numeroPlano){ toast("Escribe el número de plano"); return; }
+
+  const obraRef = db.collection("obras").doc(obraId);
+  const vRef = obraRef.collection("ventanas").doc(id);
+  let snap = await vRef.get();
+  if(!snap.exists){
+    // Pegatina física cuyo registro no existe (p. ej. se borró): se vuelve a crear como código libre.
+    if(!esQrGenerico(null, id)){ toast("No existe ningún QR con el código " + id + " en esta obra"); return; }
+    const o = await obraRef.get();
+    if(!o.exists){ toast("Esta obra ya no existe"); return; }
+    const n = parseInt(String(id).replace(/\D/g,""), 10) || 0;
+    await vRef.set({ numero: n, etiqueta: id, ...camposQrLiberado() });
+    obraRef.update({ numSinAsignar: firebase.firestore.FieldValue.increment(1) }).catch(()=>{});
+    snap = await vRef.get();
+  }
+  const v = snap.data() || {};
+
+  // Ya vinculado a otra ventana o ya asignado: no se pisa nada, se ofrece abrir esa ventana.
+  if(v.aliasTo && v.aliasTo !== id){
+    if(confirmar(`El QR ${id} ya está vinculado a otra ventana.\n\n¿Quieres abrirla?`)) navegar(`#/ventana/${obraId}/${v.aliasTo}`);
+    return;
+  }
+  if(v.asignada !== false){
+    const det = `Casa ${v.casa||"—"}${v.planta?", Planta "+v.planta:""}, Nº ${v.numeroPlano||v.etiqueta||id}`;
+    if(confirmar(`El QR ${id} ya está asignado (${det}).\n\n¿Quieres abrir esa ventana?\n(Para cambiarlo, ábrela y usa «Editar identificación».)`)) navegar(`#/ventana/${obraId}/${id}`);
+    return;
+  }
+
+  const datos = { casa, planta: "", numeroPlano, referencia: "", ubicacion: "" };
+  const candidatos = await buscarVentanasCoincidentes(obraId, id, datos);
+
+  if(!candidatos.length){
+    if(!confirmar(`No hay ninguna ventana con el número ${numeroPlano}${casa?` en la casa ${casa}`:""}.\n\n¿Crear una ventana nueva con ese número y asignarle el QR ${id}?`)) return;
+    await guardarVentanaNueva(obraId, id, vRef, datos, v);
+    navegar(`#/ventana/${obraId}/${id}`);
+    return;
+  }
+  if(candidatos.length === 1){
+    const c = candidatos[0].data();
+    const det = `Casa ${c.casa||"—"}${c.planta?", Planta "+c.planta:""}, Nº ${c.numeroPlano||numeroPlano}${c.referencia?" ("+c.referencia+")":""}`;
+    if(!confirmar(`Vas a asignar el QR ${id} a la ventana ${det}.\n\n¿Es correcto?`)) return;
+    await vincularVentana(obraId, id, vRef, candidatos[0], v);
+    return;
+  }
+  abrirSelectorVinculo(obraId, id, vRef, candidatos, datos, v);
 }
 
 function pararScanner(){
