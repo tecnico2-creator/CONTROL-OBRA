@@ -206,6 +206,15 @@
   .feed-item .fi-meta b{color:var(--gris-800);}
   .feed-item .fi-foto{display:block;width:100%;max-width:300px;border-radius:12px;background:var(--gris-200);}
   .feed-item .meta .who{font-weight:700;color:var(--gris-800);}
+  .hr-total{font-size:26px;font-weight:800;color:var(--primario-osc);margin:6px 0 4px;}
+  .hr-total .muted{font-size:14px;font-weight:500;}
+  .hrow{display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding:9px 0;border-bottom:1px solid var(--gris-200);font-size:15.5px;}
+  .hrow .hv{font-weight:800;white-space:nowrap;color:var(--gris-800);}
+  .hrow .hsm{display:block;font-size:13px;color:var(--gris-600);font-weight:500;margin-top:2px;}
+  details.hcasa > summary{cursor:pointer;list-style:none;}
+  details.hcasa > summary::-webkit-details-marker{display:none;}
+  details.hcasa .hsub{padding-left:14px;background:var(--gris-100);border-radius:8px;margin:4px 0 8px;}
+  details.hcasa .hsub .hrow:last-child{border-bottom:none;}
   .feed-item .txt{font-size:16px;line-height:1.4;white-space:pre-wrap;}
   .foto-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px;}
   .foto-grid img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:10px;background:var(--gris-200);}
@@ -1976,10 +1985,20 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
     db.collection("eventos").where("obraId","==",obraId).get().then(snap=>{
       const todosEventos = snap.docs.map(d=>d.data());
       if(!todosEventos.length){ cont.innerHTML = `<div class="card"><div class="empty">Todavía no hay actividad registrada en esta obra.</div></div>`; return; }
-      let filtro = "", periodo = "todo", desde = "", hasta = "";
+      let filtro = "", periodo = "todo", desde = "", hasta = "", umbralH = 3;
 
       function pintarFilas(){
         const { eventos: eventosPeriodo, label: labelPeriodo } = filtrarEventosPorPeriodo(todosEventos, periodo, desde, hasta);
+        // Horas trabajadas: se calculan con TODO el historial (hace falta la marca anterior) y luego
+        // se acotan al periodo y al instalador buscado.
+        const ventanasPorIdHoras = new Map(ventanas.map(v=>[v.id, v]));
+        const ventanasMapaHoras = new Map();
+        ventanasPorIdHoras.forEach((v, id)=> ventanasMapaHoras.set(id, (v.aliasTo && ventanasPorIdHoras.get(v.aliasTo)) ? ventanasPorIdHoras.get(v.aliasTo) : v));
+        const tiemposTodos = calcularTiempos(todosEventos, ventanasMapaHoras, umbralH);
+        const normHoras = normalizarCabecera(filtro);
+        const tiemposPeriodo = filtrarEventosPorPeriodo(tiemposTodos, periodo, desde, hasta).eventos
+          .filter(f => !normHoras || normalizarCabecera(f.instalador).includes(normHoras));
+        const aggHoras = agregarTiempos(tiemposPeriodo);
         const filas = agregarPorInstalador(eventosPeriodo);
         const norm = normalizarCabecera(filtro);
         const visibles = norm ? filas.filter(f=> normalizarCabecera(f.nombre).includes(norm)) : filas;
@@ -2016,7 +2035,14 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
               <button class="btn btn-secondary" id="btnExpEstObraXls">📊 Exportar Excel</button>
             </div>
           </div>
+          ${horasHtml(aggHoras, umbralH)}
         `;
+        const inpUmbral = document.getElementById("inpUmbralH");
+        if(inpUmbral) inpUmbral.addEventListener("change", ()=>{ const n = parseFloat(String(inpUmbral.value).replace(",", ".")); umbralH = isNaN(n) || n < 0 ? 3 : n; pintarFilas(); });
+        const bHorasPdf = document.getElementById("btnHorasPdf");
+        if(bHorasPdf) bHorasPdf.addEventListener("click", ()=> generarPdfHoras(obraData.nombre||"Obra", aggHoras, labelPeriodo, umbralH));
+        const bHorasXls = document.getElementById("btnHorasXls");
+        if(bHorasXls) bHorasXls.addEventListener("click", ()=> generarExcelHoras(obraData.nombre||"Obra", aggHoras, labelPeriodo, umbralH));
         document.getElementById("selPeriodoEstObra").addEventListener("change", (e)=>{ periodo = e.target.value; pintarFilas(); });
         const inpDesde = document.getElementById("inpDesdeEstObra");
         if(inpDesde) inpDesde.addEventListener("change", (e)=>{ desde = e.target.value; pintarFilas(); });
@@ -3643,6 +3669,272 @@ function generarPdfEstadisticas(titulo, filas, periodoLabel){
   }
   doc.save(`estadisticas_${slug(titulo)}.pdf`);
   toast("PDF generado");
+}
+
+/* ============================================================
+   HORAS TRABAJADAS POR ETAPA (a partir de las marcas de etapa)
+   ============================================================ */
+// "1 h 05 min" / "25 min" / "0 min"
+function fmtMin(min){
+  min = Math.round(min || 0);
+  const h = Math.floor(min/60), m = min % 60;
+  if(!h) return `${m} min`;
+  return m ? `${h} h ${String(m).padStart(2,"0")} min` : `${h} h`;
+}
+// "1:05" — formato corto para las tablas del PDF (horas:minutos)
+function fmtHM(min){
+  min = Math.round(min || 0);
+  return `${Math.floor(min/60)}:${String(min % 60).padStart(2,"0")}`;
+}
+function horasDec(min){ return Math.round((min || 0)/60*100)/100; }
+
+// Calcula el tiempo de cada marca de etapa. Regla (solo con las marcas registradas, sin cambiar
+// nada en obra): cada instalador, cada día, va marcando etapas una tras otra; el tiempo de una
+// marca es lo que pasó desde su marca anterior ese mismo día (en cualquier ventana). La primera
+// marca del día no tiene hora de inicio (cuenta 0 y se avisa). Los tramos mayores que "umbralH"
+// horas (comida, otra tarea, etc.) se ignoran. Si varias etapas se marcan a la vez, las
+// siguientes cuentan 0 min.
+function calcularTiempos(eventos, ventanasMapa, umbralH){
+  const umbralMin = Math.max(0, Number(umbralH) || 0) * 60;
+  const soloEtapas = eventos.filter(e => e.tipo === "etapa" && ETAPAS.includes(e.etapa) && e.fecha);
+  const definitivos = colapsarEventosDefinitivos(soloEtapas, "", "9999-12-31T00:00:00.000Z");
+  const real = ev => (ventanasMapa && ventanasMapa.get(ev.ventanaId)) || null;
+  // Un mismo hito registrado en un QR y en su ventana real se cuenta una sola vez.
+  const unicos = new Map();
+  definitivos.forEach(ev=>{
+    const v = real(ev);
+    const k = `${v ? v.id : ev.ventanaId}|${ev.etapa}`;
+    const p = unicos.get(k);
+    if(!p || ev.fecha > p.fecha) unicos.set(k, ev);
+  });
+  const porPersonaDia = new Map();
+  unicos.forEach(ev=>{
+    const k = `${ev.nombre || "—"}|${claveDia(ev.fecha)}`;
+    if(!porPersonaDia.has(k)) porPersonaDia.set(k, []);
+    porPersonaDia.get(k).push(ev);
+  });
+  const filas = [];
+  porPersonaDia.forEach(lista=>{
+    lista.sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : ETAPAS.indexOf(a.etapa) - ETAPAS.indexOf(b.etapa));
+    lista.forEach((ev, i)=>{
+      const v = real(ev);
+      let min = 0, nota = "";
+      if(i === 0) nota = "sin hora de inicio";
+      else {
+        const g = (new Date(ev.fecha) - new Date(lista[i-1].fecha)) / 60000;
+        if(umbralMin && g > umbralMin) nota = "tramo largo ignorado"; else min = g;
+      }
+      filas.push({
+        fecha: ev.fecha, instalador: ev.nombre || "—", etapa: ev.etapa,
+        ventanaId: v ? v.id : ev.ventanaId,
+        ventana: (v ? etiquetaCorta(v) : ev.ventanaEtiqueta) || "—",
+        casa: (v && v.casa) || ev.casa || "", planta: (v && v.planta) || ev.planta || "",
+        min, nota
+      });
+    });
+  });
+  filas.sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
+  return filas;
+}
+
+function etapasCero(){ const o = {}; ETAPAS.forEach(e => o[e] = 0); return o; }
+
+// Totales por etapa, instalador, casa y ventana a partir de las filas de calcularTiempos.
+function agregarTiempos(filas){
+  const total = { min: 0, marcas: filas.length, sinInicio: 0, largos: 0 };
+  const porEtapa = new Map(ETAPAS.map(e => [e, { etapa: e, min: 0, marcas: 0 }]));
+  const porInst = new Map(), porCasa = new Map();
+  filas.forEach(f=>{
+    total.min += f.min;
+    if(f.nota === "sin hora de inicio") total.sinInicio++;
+    if(f.nota === "tramo largo ignorado") total.largos++;
+    const pe = porEtapa.get(f.etapa); pe.min += f.min; pe.marcas++;
+    if(!porInst.has(f.instalador)) porInst.set(f.instalador, { nombre: f.instalador, min: 0, marcas: 0, etapas: etapasCero() });
+    const pi = porInst.get(f.instalador); pi.min += f.min; pi.marcas++; pi.etapas[f.etapa] += f.min;
+    if(!porCasa.has(f.casa)) porCasa.set(f.casa, { casa: f.casa, min: 0, marcas: 0, etapas: etapasCero(), ventanas: new Map() });
+    const pc = porCasa.get(f.casa); pc.min += f.min; pc.marcas++; pc.etapas[f.etapa] += f.min;
+    if(!pc.ventanas.has(f.ventanaId)) pc.ventanas.set(f.ventanaId, { id: f.ventanaId, ventana: f.ventana, planta: f.planta, min: 0, etapas: etapasCero() });
+    const pv = pc.ventanas.get(f.ventanaId); pv.min += f.min; pv.etapas[f.etapa] += f.min;
+  });
+  const casas = [...porCasa.values()].map(c => ({
+    ...c, ventanas: [...c.ventanas.values()].sort((a,b)=> compararNatural(a.ventana, b.ventana))
+  })).sort((a,b)=>{
+    if(!a.casa && b.casa) return 1; if(a.casa && !b.casa) return -1;
+    return compararNatural(a.casa, b.casa);
+  });
+  return {
+    total, porEtapa: [...porEtapa.values()],
+    porInstalador: [...porInst.values()].sort((a,b)=> b.min - a.min),
+    porCasa: casas, filas
+  };
+}
+
+function horasHtml(agg, umbralH){
+  const t = agg.total;
+  const etapasTxt = (et)=> ETAPAS.filter(e => et[e] > 0).map(e => `${ETAPA_LABEL[e]} ${fmtMin(et[e])}`).join(" · ") || "—";
+  const avisos = [];
+  if(t.sinInicio) avisos.push(`${t.sinInicio} marca${t.sinInicio===1?"":"s"} sin hora de inicio (la primera del día de cada instalador: cuenta 0)`);
+  if(t.largos) avisos.push(`${t.largos} tramo${t.largos===1?"":"s"} de más de ${umbralH} h ignorado${t.largos===1?"":"s"}`);
+  return `
+    <div class="card" id="cardHoras">
+      <div class="section-title" style="margin-top:0;">⏱ Horas trabajadas</div>
+      <p class="muted" style="margin-bottom:10px;">Se calculan con el tiempo entre las marcas de etapa de cada instalador el mismo día. Usa el periodo y el buscador de arriba.</p>
+      <label class="field"><span>Ignorar tramos de más de (horas; 0 = no ignorar)</span>
+        <input type="number" id="inpUmbralH" min="0" step="0.5" inputmode="decimal" value="${esc(String(umbralH))}" /></label>
+      ${!t.marcas ? `<div class="empty">No hay etapas marcadas en ese periodo.</div>` : `
+        <div class="hr-total"><b>${esc(fmtMin(t.min))}</b><span class="muted"> en ${t.marcas} etapa${t.marcas===1?"":"s"} marcada${t.marcas===1?"":"s"}</span></div>
+        ${avisos.map(a=>`<p class="muted" style="margin:2px 0;">ℹ️ ${esc(a)}</p>`).join("")}
+
+        <div class="section-title">Por etapa</div>
+        ${agg.porEtapa.map(e=>`<div class="hrow"><span>${esc(ETAPA_LABEL[e.etapa])} <span class="muted">· ${e.marcas}</span></span><span class="hv">${esc(fmtMin(e.min))}</span></div>`).join("")}
+
+        <div class="section-title">Por instalador</div>
+        ${agg.porInstalador.map(i=>`
+          <div class="hrow"><span><b>${esc(i.nombre)}</b><small class="hsm">${esc(etapasTxt(i.etapas))}</small></span><span class="hv">${esc(fmtMin(i.min))}</span></div>`).join("")}
+
+        <div class="section-title">Por casa y ventana</div>
+        ${agg.porCasa.map(c=>`
+          <details class="hcasa">
+            <summary class="hrow"><span><b>${c.casa ? "Casa " + esc(c.casa) : "Sin casa asignada"}</b> <span class="muted">· ${c.ventanas.length} ventana${c.ventanas.length===1?"":"s"}</span><small class="hsm">${esc(etapasTxt(c.etapas))}</small></span><span class="hv">${esc(fmtMin(c.min))}</span></summary>
+            <div class="hsub">
+              ${c.ventanas.map(v=>`<div class="hrow"><span>Ventana <b>${esc(v.ventana)}</b>${v.planta ? ` <span class="muted">· Planta ${esc(v.planta)}</span>` : ""}<small class="hsm">${esc(etapasTxt(v.etapas))}</small></span><span class="hv">${esc(fmtMin(v.min))}</span></div>`).join("")}
+            </div>
+          </details>`).join("")}
+
+        <div class="btn-row" style="margin-top:14px;">
+          <button class="btn btn-secondary" id="btnHorasPdf">🧾 Exportar horas (PDF)</button>
+          <button class="btn btn-secondary" id="btnHorasXls">📊 Exportar horas (Excel)</button>
+        </div>
+      `}
+    </div>`;
+}
+
+function generarExcelHoras(obraNombre, agg, labelPeriodo, umbralH){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  if(!agg.total.marcas){ toast("No hay horas que exportar en ese periodo"); return; }
+  const wb = XLSX.utils.book_new();
+  const add = (nombre, filas)=> XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filas), nombre);
+  const t = agg.total;
+  add("Resumen", [
+    { Concepto: "Obra", Valor: obraNombre },
+    { Concepto: "Periodo", Valor: labelPeriodo },
+    { Concepto: "Se ignoran tramos de más de (h)", Valor: umbralH || "No" },
+    { Concepto: "Tiempo total", Valor: fmtMin(t.min) },
+    { Concepto: "Horas totales", Valor: horasDec(t.min) },
+    { Concepto: "Etapas marcadas", Valor: t.marcas },
+    { Concepto: "Marcas sin hora de inicio (cuentan 0)", Valor: t.sinInicio },
+    { Concepto: "Tramos largos ignorados", Valor: t.largos }
+  ]);
+  add("Por etapa", agg.porEtapa.map(e=>({ Etapa: ETAPA_LABEL[e.etapa], "Etapas marcadas": e.marcas, Tiempo: fmtMin(e.min), Horas: horasDec(e.min) })));
+  const colsEtapas = (et)=>{ const o = {}; ETAPAS.forEach(e => o[`${ETAPA_LABEL[e]} (h)`] = horasDec(et[e])); return o; };
+  add("Por instalador", agg.porInstalador.map(i=>({ Instalador: i.nombre, ...colsEtapas(i.etapas), "Total (h)": horasDec(i.min), Tiempo: fmtMin(i.min) })));
+  add("Por casa", agg.porCasa.map(c=>({ Casa: c.casa || "Sin casa asignada", Ventanas: c.ventanas.length, ...colsEtapas(c.etapas), "Total (h)": horasDec(c.min), Tiempo: fmtMin(c.min) })));
+  const porVentana = [];
+  agg.porCasa.forEach(c => c.ventanas.forEach(v => porVentana.push({ Casa: c.casa || "Sin casa asignada", Planta: v.planta || "", Ventana: v.ventana, ...colsEtapas(v.etapas), "Total (h)": horasDec(v.min), Tiempo: fmtMin(v.min) })));
+  add("Por ventana", porVentana);
+  add("Detalle", agg.filas.map(f=>{
+    const d = new Date(f.fecha);
+    return {
+      Fecha: d.toLocaleDateString("es-ES"), Hora: d.toLocaleTimeString("es-ES", { hour:"2-digit", minute:"2-digit" }),
+      Casa: f.casa || "", Planta: f.planta || "", Ventana: f.ventana, Etapa: ETAPA_LABEL[f.etapa] || f.etapa,
+      Instalador: f.instalador, Minutos: Math.round(f.min), Horas: horasDec(f.min), Observación: f.nota
+    };
+  }));
+  XLSX.writeFile(wb, `Horas_${slug(obraNombre)}_${new Date().toISOString().slice(0,10)}.xlsx`);
+  toast("Excel de horas generado");
+}
+
+function generarPdfHoras(obraNombre, agg, labelPeriodo, umbralH){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  if(!agg.total.marcas){ toast("No hay horas que exportar en ese periodo"); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const M = 15, W = 180;
+  let y = M;
+  const t = agg.total;
+
+  doc.setFont("helvetica","bold"); doc.setFontSize(17); doc.setTextColor(20);
+  doc.text(`Horas trabajadas — ${obraNombre}`, M, y); y += 7;
+  doc.setFont("helvetica","normal"); doc.setFontSize(11); doc.setTextColor(60);
+  doc.text(`Periodo: ${labelPeriodo}`, M, y); y += 5.5;
+  doc.text(`Generado: ${new Date().toLocaleString("es-ES")}`, M, y); y += 5.5;
+  doc.text(`Tramos de más de ${umbralH || "—"} h ${umbralH ? "ignorados" : "(sin límite)"}. Tiempos en horas:minutos.`, M, y); y += 9;
+
+  doc.setFillColor(240,247,242); doc.setDrawColor(198,225,209);
+  doc.roundedRect(M, y, W, 17, 1.5, 1.5, "FD");
+  doc.setFont("helvetica","bold"); doc.setFontSize(18); doc.setTextColor(21,128,61);
+  doc.text(fmtMin(t.min), M + 5, y + 11.5);
+  doc.setFont("helvetica","normal"); doc.setFontSize(11); doc.setTextColor(40);
+  doc.text(`${t.marcas} etapa${t.marcas===1?"":"s"} marcada${t.marcas===1?"":"s"}`, M + W - 5, y + 11, { align: "right" });
+  y += 22;
+  if(t.sinInicio || t.largos){
+    doc.setFontSize(10); doc.setTextColor(90);
+    const av = [];
+    if(t.sinInicio) av.push(`${t.sinInicio} marca${t.sinInicio===1?"":"s"} sin hora de inicio (la primera del día de cada instalador cuenta 0)`);
+    if(t.largos) av.push(`${t.largos} tramo${t.largos===1?"":"s"} largo${t.largos===1?"":"s"} ignorado${t.largos===1?"":"s"}`);
+    const l = doc.splitTextToSize(av.join(". ") + ".", W);
+    doc.text(l, M, y); y += l.length * 4.8 + 3;
+  }
+
+  const nuevaPag = ()=>{ doc.addPage(); y = M; };
+  function titulo(txt){
+    if(y > 255) nuevaPag();
+    doc.setFont("helvetica","bold"); doc.setFontSize(13); doc.setTextColor(20);
+    doc.text(txt, M, y); y += 6;
+  }
+  // cols: [{label, w, align}], filas: [{celdas:[...], nivel:0|1, negrita:bool}]
+  function tabla(cols, filas){
+    const cab = ()=>{
+      doc.setFillColor(226,236,230); doc.rect(M, y, W, 8, "F");
+      doc.setFont("helvetica","bold"); doc.setFontSize(10); doc.setTextColor(20);
+      let x = M;
+      cols.forEach(c=>{
+        doc.text(truncarAncho(doc, c.label, c.w - 3), c.align==="right" ? x + c.w - 1.5 : x + 1.5, y + 5.5, c.align==="right" ? { align:"right" } : undefined);
+        x += c.w;
+      });
+      y += 8;
+    };
+    if(y > 262) nuevaPag();
+    cab();
+    filas.forEach((f, i)=>{
+      if(y > 280){ nuevaPag(); cab(); }
+      if(f.nivel === 0 && f.sombrear){ doc.setFillColor(245,247,246); doc.rect(M, y, W, 7.5, "F"); }
+      doc.setFont("helvetica", f.negrita ? "bold" : "normal"); doc.setFontSize(10.5); doc.setTextColor(20);
+      let x = M;
+      f.celdas.forEach((txt, k)=>{
+        const c = cols[k];
+        const sangria = (k === 0 && f.nivel === 1) ? 5 : 0;
+        doc.text(truncarAncho(doc, String(txt ?? ""), c.w - 3 - sangria), c.align==="right" ? x + c.w - 1.5 : x + 1.5 + sangria, y + 5.2, c.align==="right" ? { align:"right" } : undefined);
+        x += c.w;
+      });
+      y += 7.5;
+    });
+    y += 6;
+  }
+  const colsE = [{ label: "", w: 48 }, ...ETAPAS.map(e => ({ label: ETAPA_LABEL[e], w: 20, align: "right" })), { label: "Total", w: 32, align: "right" }];
+  const celdasEt = (et, tot)=> [...ETAPAS.map(e => fmtHM(et[e])), fmtHM(tot)];
+
+  titulo("Por etapa");
+  tabla(
+    [{ label: "Etapa", w: 70 }, { label: "Etapas marcadas", w: 50, align: "right" }, { label: "Tiempo", w: 60, align: "right" }],
+    agg.porEtapa.map(e=>({ celdas: [ETAPA_LABEL[e.etapa], e.marcas, fmtMin(e.min)], nivel: 0 }))
+  );
+
+  titulo("Por instalador");
+  colsE[0].label = "Instalador";
+  tabla(colsE, agg.porInstalador.map((i,k)=>({ celdas: [i.nombre, ...celdasEt(i.etapas, i.min)], nivel: 0, negrita: false, sombrear: k % 2 === 1 })));
+
+  titulo("Por casa y ventana");
+  colsE[0].label = "Casa / Ventana";
+  const filasCasa = [];
+  agg.porCasa.forEach(c=>{
+    filasCasa.push({ celdas: [c.casa ? `Casa ${c.casa}` : "Sin casa asignada", ...celdasEt(c.etapas, c.min)], nivel: 0, negrita: true, sombrear: true });
+    c.ventanas.forEach(v => filasCasa.push({ celdas: [`Ventana ${v.ventana}${v.planta ? " (Pl " + v.planta + ")" : ""}`, ...celdasEt(v.etapas, v.min)], nivel: 1 }));
+  });
+  tabla(colsE, filasCasa);
+
+  doc.save(`Horas_${slug(obraNombre)}_${new Date().toISOString().slice(0,10)}.pdf`);
+  toast("PDF de horas generado");
 }
 
 function renderEstadisticas(){
