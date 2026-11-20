@@ -3688,6 +3688,18 @@ function fmtHM(min){
 }
 function horasDec(min){ return Math.round((min || 0)/60*100)/100; }
 
+// Pausas fijas de la jornada (hora local, en minutos desde las 00:00): almuerzo 10:00-10:30 y comida
+// 14:00-15:00. El tiempo que caiga dentro de ellas entre dos marcas no se cuenta como trabajo.
+const PAUSAS_MIN = [[10*60, 10*60 + 30], [14*60, 15*60]];
+function minutosDePausa(iso0, iso1){
+  const a = new Date(iso0), b = new Date(iso1);
+  const m0 = a.getHours()*60 + a.getMinutes() + a.getSeconds()/60;
+  const m1 = b.getHours()*60 + b.getMinutes() + b.getSeconds()/60;
+  let total = 0;
+  PAUSAS_MIN.forEach(([ini, fin])=>{ total += Math.max(0, Math.min(m1, fin) - Math.max(m0, ini)); });
+  return total;
+}
+
 // Calcula el tiempo de cada marca de etapa. Regla (solo con las marcas registradas, sin cambiar
 // nada en obra): cada instalador, cada día, va marcando etapas una tras otra; el tiempo de una
 // marca es lo que pasó desde su marca anterior ese mismo día (en cualquier ventana). La primera
@@ -3721,7 +3733,8 @@ function calcularTiempos(eventos, ventanasMapa, umbralH){
       let min = 0, nota = "";
       if(i === 0) nota = "sin hora de inicio";
       else {
-        const g = (new Date(ev.fecha) - new Date(lista[i-1].fecha)) / 60000;
+        const bruto = (new Date(ev.fecha) - new Date(lista[i-1].fecha)) / 60000;
+        const g = Math.max(0, bruto - minutosDePausa(lista[i-1].fecha, ev.fecha)); // sin almuerzo ni comida
         if(umbralMin && g > umbralMin) nota = "tramo largo ignorado"; else min = g;
       }
       filas.push({
@@ -3778,7 +3791,7 @@ function horasHtml(agg, umbralH){
   return `
     <div class="card" id="cardHoras">
       <div class="section-title" style="margin-top:0;">⏱ Horas trabajadas</div>
-      <p class="muted" style="margin-bottom:10px;">Se calculan con el tiempo entre las marcas de etapa de cada instalador el mismo día. Usa el periodo y el buscador de arriba.</p>
+      <p class="muted" style="margin-bottom:10px;">Se calculan con el tiempo entre las marcas de etapa de cada instalador el mismo día, sin contar el almuerzo (10:00–10:30) ni la comida (14:00–15:00). Usa el periodo y el buscador de arriba.</p>
       <label class="field"><span>Ignorar tramos de más de (horas; 0 = no ignorar)</span>
         <input type="number" id="inpUmbralH" min="0" step="0.5" inputmode="decimal" value="${esc(String(umbralH))}" /></label>
       ${!t.marcas ? `<div class="empty">No hay etapas marcadas en ese periodo.</div>` : `
@@ -3818,6 +3831,7 @@ function generarExcelHoras(obraNombre, agg, labelPeriodo, umbralH){
   add("Resumen", [
     { Concepto: "Obra", Valor: obraNombre },
     { Concepto: "Periodo", Valor: labelPeriodo },
+    { Concepto: "Pausas descontadas", Valor: "Almuerzo 10:00-10:30 y comida 14:00-15:00" },
     { Concepto: "Se ignoran tramos de más de (h)", Valor: umbralH || "No" },
     { Concepto: "Tiempo total", Valor: fmtMin(t.min) },
     { Concepto: "Horas totales", Valor: horasDec(t.min) },
@@ -3858,7 +3872,8 @@ function generarPdfHoras(obraNombre, agg, labelPeriodo, umbralH){
   doc.setFont("helvetica","normal"); doc.setFontSize(11); doc.setTextColor(60);
   doc.text(`Periodo: ${labelPeriodo}`, M, y); y += 5.5;
   doc.text(`Generado: ${new Date().toLocaleString("es-ES")}`, M, y); y += 5.5;
-  doc.text(`Tramos de más de ${umbralH || "—"} h ${umbralH ? "ignorados" : "(sin límite)"}. Tiempos en horas:minutos.`, M, y); y += 9;
+  doc.text(`Sin contar almuerzo (10:00-10:30) ni comida (14:00-15:00). Tramos de más de ${umbralH || "—"} h ${umbralH ? "ignorados" : "(sin límite)"}.`, M, y); y += 5.5;
+  doc.text("Tiempos de las tablas en horas:minutos.", M, y); y += 9;
 
   doc.setFillColor(240,247,242); doc.setDrawColor(198,225,209);
   doc.roundedRect(M, y, W, 17, 1.5, 1.5, "FD");
