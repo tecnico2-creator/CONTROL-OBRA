@@ -4674,10 +4674,39 @@ async function generarPdfFotosNotas(obraData, ventanas, periodoLabel){
   const agrupado = conContenido.some(v=>v.casa);
   let casaActual = null;
 
+  const PIE = 284; // límite inferior útil de la página (A4 = 297 mm)
   for(const v of conContenido){
     const casaKey = agrupado ? (v.casa || "Sin casa asignada") : null;
+    const sangria = margen + (agrupado?8:4);
+    const anchoItem = anchoUtil - (sangria-margen);
+    // Notas y fotos mezcladas por fecha, igual que en la pestaña "Fotos y notas" de la app.
+    // Las fotos van a tamaño grande (ancho completo, hasta ~190 mm de alto) con la máxima calidad
+    // disponible: se incrustan los bytes tal cual están guardados, sin recomprimir.
+    const items = [];
+    for(const it of [
+      ...(v.notas||[]).map(n=>({tipo:"nota", ...n})),
+      ...(v.fotos||[]).map(f=>({tipo:"foto", ...f}))
+    ].sort((a,b)=> new Date(b.fecha||0) - new Date(a.fecha||0))){
+      if(it.tipo === "foto"){
+        const dataUrl = await urlADataUrl(it.url);
+        if(!dataUrl) continue;
+        try{
+          const props = doc.getImageProperties(dataUrl);
+          const maxW = anchoItem, maxH = 190;
+          let w = maxW, h = (props.height/props.width)*w;
+          if(h > maxH){ h = maxH; w = (props.width/props.height)*h; }
+          it.img = { dataUrl, formato: formatoImagenDataUrl(dataUrl), w, h };
+        }catch(e){ continue; /* foto no decodificable: se omite sin romper el documento */ }
+      }
+      items.push(it);
+    }
+    if(!items.length) continue;
+    // La cabecera de la ventana (y de la casa) no se queda sola al pie de una página: si no cabe
+    // junto con su primer elemento, todo pasa a la página siguiente.
+    const altoPrimero = items[0].tipo === "foto" ? 5 + items[0].img.h + 4 : 5 + 6;
+    const altoCabecera = 6 + ((agrupado && casaKey !== casaActual) ? 10 : 0);
+    if(y + altoCabecera + altoPrimero > PIE){ doc.addPage(); y = margen; casaActual = null; }
     if(agrupado && casaKey !== casaActual){
-      if(y > 260){ doc.addPage(); y = margen; }
       casaActual = casaKey;
       if(y > margen) y += 3;
       doc.setFontSize(13); doc.setTextColor(20);
@@ -4685,43 +4714,37 @@ async function generarPdfFotosNotas(obraData, ventanas, periodoLabel){
       y += 7;
       doc.setDrawColor(225); doc.line(margen, y-4, 210-margen, y-4);
     }
-    if(y > 270){ doc.addPage(); y = margen; casaActual = null; }
     const detalle = [v.planta && `Planta ${v.planta}`, v.referencia].filter(Boolean).join(" · ");
     doc.setFontSize(11.5); doc.setTextColor(20);
     doc.text(`${etiquetaCorta(v)}${detalle ? " ("+detalle+")" : ""}`, margen + (agrupado?4:0), y);
     y += 6;
 
-    const sangria = margen + (agrupado?8:4);
-    // Notas y fotos mezcladas por fecha, igual que en la pestaña "Fotos y notas" de la app.
-    const items = [
-      ...(v.notas||[]).map(n=>({tipo:"nota", ...n})),
-      ...(v.fotos||[]).map(f=>({tipo:"foto", ...f}))
-    ].sort((a,b)=> new Date(b.fecha||0) - new Date(a.fecha||0));
-
     for(const it of items){
-      if(y > 265){ doc.addPage(); y = margen; }
+      const altoBloque = it.tipo === "foto" ? 5 + it.img.h + 4 : 5 + 6;
+      if(y + altoBloque > PIE){ doc.addPage(); y = margen; }
       doc.setFontSize(9.5); doc.setTextColor(90);
       doc.text(`${fechaCorta(it.fecha)} · ${it.autor||"—"}`, sangria, y);
       y += 5;
       if(it.tipo === "nota"){
-        doc.setFontSize(10.5); doc.setTextColor(30);
-        const lineasTexto = doc.splitTextToSize(it.texto||"", anchoUtil - (sangria-margen));
-        doc.text(lineasTexto, sangria, y);
-        y += lineasTexto.length * 5 + 2;
-      } else {
-        const dataUrl = await urlADataUrl(it.url);
-        if(dataUrl){
-          if(y > 225){ doc.addPage(); y = margen; }
-          try{
-            const formato = formatoImagenDataUrl(dataUrl);
-            const props = doc.getImageProperties(dataUrl);
-            const maxW = 60, maxH = 50;
-            let w = maxW, h = (props.height/props.width)*w;
-            if(h > maxH){ h = maxH; w = (props.width/props.height)*h; }
-            doc.addImage(dataUrl, formato, sangria, y, w, h);
-            y += h + 4;
-          }catch(e){ /* foto no decodificable: se omite sin romper el documento */ }
+        // Nota subrayada en rojo: cada línea de texto lleva su subrayado rojo.
+        doc.setFontSize(11.5); doc.setTextColor(20);
+        const lineasTexto = doc.splitTextToSize(it.texto||"", anchoItem);
+        for(const linea of lineasTexto){
+          if(y + 6 > PIE){ doc.addPage(); y = margen; doc.setFontSize(11.5); doc.setTextColor(20); }
+          doc.text(linea, sangria, y);
+          const wLinea = doc.getTextWidth(linea);
+          if(linea.trim()){
+            doc.setDrawColor(220, 38, 38); doc.setLineWidth(0.5);
+            doc.line(sangria, y + 1.3, sangria + wLinea, y + 1.3);
+            doc.setLineWidth(0.2);
+          }
+          y += 6;
         }
+        doc.setDrawColor(200);
+        y += 2;
+      } else {
+        doc.addImage(it.img.dataUrl, it.img.formato, sangria, y, it.img.w, it.img.h, undefined, "NONE");
+        y += it.img.h + 4;
       }
       y += 3;
     }
