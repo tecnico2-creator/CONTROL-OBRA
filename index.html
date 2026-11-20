@@ -3873,7 +3873,7 @@ function generarPdfHoras(obraNombre, agg, labelPeriodo, umbralH){
     if(t.sinInicio) av.push(`${t.sinInicio} marca${t.sinInicio===1?"":"s"} sin hora de inicio (la primera del día de cada instalador cuenta 0)`);
     if(t.largos) av.push(`${t.largos} tramo${t.largos===1?"":"s"} largo${t.largos===1?"":"s"} ignorado${t.largos===1?"":"s"}`);
     const l = doc.splitTextToSize(av.join(". ") + ".", W);
-    doc.text(l, M, y); y += l.length * 4.8 + 3;
+    doc.text(l, M, y); y += l.length * 4.8 + 6;
   }
 
   const nuevaPag = ()=>{ doc.addPage(); y = M; };
@@ -3911,7 +3911,8 @@ function generarPdfHoras(obraNombre, agg, labelPeriodo, umbralH){
     });
     y += 6;
   }
-  const colsE = [{ label: "", w: 48 }, ...ETAPAS.map(e => ({ label: ETAPA_LABEL[e], w: 20, align: "right" })), { label: "Total", w: 32, align: "right" }];
+  const ETAPA_CORTA = { instalada: "Instal.", sellada: "Sellada", acristalada: "Acrist.", composite: "Compos.", terminada: "Termin." };
+  const colsE = [{ label: "", w: 48 }, ...ETAPAS.map(e => ({ label: ETAPA_CORTA[e], w: 20, align: "right" })), { label: "Total", w: 32, align: "right" }];
   const celdasEt = (et, tot)=> [...ETAPAS.map(e => fmtHM(et[e])), fmtHM(tot)];
 
   titulo("Por etapa");
