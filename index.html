@@ -128,6 +128,17 @@
   .tabs{display:flex;gap:6px;margin-bottom:14px;background:#fff;border-radius:10px;padding:4px;box-shadow:var(--sombra);overflow-x:auto;}
   .tabs button{flex:1;border:none;background:transparent;padding:9px 4px;border-radius:8px;font-size:13.5px;font-weight:600;color:var(--gris-600);white-space:nowrap;}
   .tabs button.active{background:var(--primario);color:#fff;}
+  .pal-card{padding:14px;}
+  .pal-plano{font-size:19px;font-weight:800;color:var(--gris-800);margin-bottom:2px;}
+  .pal-tipo{font-size:15px;color:var(--gris-800);margin-bottom:2px;}
+  .pal-app{background:var(--primario-claro);color:var(--primario-osc);border-radius:10px;padding:10px 12px;margin-bottom:12px;font-weight:600;font-size:14.5px;}
+  .pal-fila{display:flex;gap:10px;justify-content:space-between;align-items:baseline;padding:9px 0;border-top:1px solid var(--gris-200);}
+  .pal-nombre{font-size:17px;font-weight:800;color:var(--primario-osc);flex:0 0 auto;max-width:55%;}
+  .pal-uds{font-size:14.5px;color:var(--gris-800);text-align:right;}
+  .pal-nota{font-size:12px;font-weight:700;background:var(--gris-100);color:var(--gris-600);border-radius:6px;padding:2px 6px;margin-left:4px;white-space:nowrap;}
+  .pal-planos{font-size:13px;color:var(--gris-600);padding:0 0 6px;}
+  .pal-planos summary{cursor:pointer;}
+  .pal-chip{border:1px solid var(--gris-200);background:#fff;border-radius:16px;padding:6px 12px;margin:0 6px 6px 0;font-size:15px;font-weight:700;color:var(--primario-osc);}
   .vgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(88px,1fr));gap:10px;}
   .vchip{
     background:#fff;border-radius:10px;box-shadow:var(--sombra);padding:10px 6px;
@@ -1151,6 +1162,249 @@ async function leerFilasDesdeArchivo(file){
   return filas;
 }
 
+// Lee el Excel "CONTENIDO DE CADA PALET": cada hoja tiene bloques que empiezan con una celda
+// "PALET 12" (o "PALET AB" en las letras) y debajo una fila por unidad con las columnas
+// fabricación · unidad (n/N) · referencia · apertura · ubicación · motor · medidas · lista de planos.
+// Recibe las hojas ya convertidas a filas [{name, rows:[[celdas]]}] y devuelve {palets, grupos, avisos}.
+function parsearPaletsDesdeHojas(hojas){
+  const RE_PALET = /^\s*(PALET|PLAET|PALLET)\s+(\S.*?)\s*$/i;
+  const RE_UNIDAD = /^\s*\d+\s*\/\s*\d+\s*$/;
+  const txt = v => String(v == null ? "" : v).replace(/\s+/g, " ").trim();
+  const grupos = [], gIndex = new Map();
+  const palets = [], avisos = [], origen = [];
+  const vistosId = new Map();
+  hojas.forEach(h=>{
+    let actual = null, c0 = 0;
+    h.rows.forEach((fila, r)=>{
+      const nFila = r + 1 + (h.fila0 || 0);
+      // ¿Cabecera de palet? Se busca en toda la fila (la columna inicial cambia según la hoja).
+      let colCab = -1, mCab = null;
+      for(let c=0;c<fila.length;c++){ const m = RE_PALET.exec(txt(fila[c])); if(m){ colCab = c; mCab = m; break; } }
+      if(mCab){
+        let id = "PALET " + mCab[2].toUpperCase();
+        if(/^PLAET/i.test(txt(fila[colCab]))) avisos.push(`Hoja «${h.name}» fila ${nFila}: «${txt(fila[colCab])}» está mal escrito; lo he leído como «${id}».`);
+        const veces = (vistosId.get(id) || 0) + 1; vistosId.set(id, veces);
+        const nota = fila.map((v,c)=> c > colCab + 7 ? txt(v) : "").filter(Boolean).join(" · ");
+        actual = { id, base: id, hoja: h.name, fila: nFila, nota, items: [] };
+        c0 = colCab; palets.push(actual); return;
+      }
+      if(!actual) return;
+      const fab = txt(fila[c0]), uni = txt(fila[c0+1]);
+      const resto = [2,3,4,5,6,7].map(i=>txt(fila[c0+i]));
+      if(!fab && !uni && resto.every(x=>!x)) return;             // fila vacía
+      if(!RE_UNIDAD.test(uni) || !resto[0]){                       // fila a medias
+        if(fab || uni || resto.some(x=>x)) avisos.push(`Hoja «${h.name}» fila ${nFila} (${actual.id}): fila incompleta («${[fab,uni,...resto].filter(Boolean).join(" · ")}»); la he ignorado.`);
+        return;
+      }
+      const planos = txt(fila[c0+7]).split(/[^0-9A-Za-z]+/).filter(Boolean);
+      const g = { fab, ref: resto[0], ap: resto[1], ub: resto[2], mo: resto[3], me: resto[4], planos };
+      const clave = [g.fab,g.ref,g.ap,g.ub,g.mo,g.me,planos.join(",")].join("|");
+      let gi = gIndex.get(clave);
+      if(gi === undefined){ gi = grupos.length; gIndex.set(clave, gi); grupos.push(g); }
+      actual.items.push({ g: gi, u: uni.replace(/\s+/g, "") });
+      origen.push({ gi, u: uni.replace(/\s+/g, ""), palet: actual, hoja: h.name, fila: nFila });
+    });
+  });
+  // Palets con el mismo nombre en dos sitios: se distinguen como "(1)", "(2)"… y se avisa.
+  vistosId.forEach((veces, id)=>{
+    if(veces < 2) return;
+    const mismos = palets.filter(p => p.base === id);
+    mismos.forEach((p, i)=>{ p.id = `${id} (${i+1})`; });
+    avisos.push(`El palet «${id}» está repetido (${mismos.map(p=>`hoja «${p.hoja}» fila ${p.fila}`).join(" y ")}). Los he guardado como «${mismos.map(p=>p.id).join("» y «")}»: revisa cuál es el número correcto.`);
+  });
+  palets.forEach(p=>{ delete p.base; });
+  // Comprobaciones: unidades repetidas en dos palets, y lista de planos que no cuadra con "N" de n/N.
+  const dondeEsta = new Map();
+  palets.forEach(p=> p.items.forEach(it=>{
+    const k = it.g + "#" + it.u;
+    if(!dondeEsta.has(k)) dondeEsta.set(k, []);
+    dondeEsta.get(k).push(p.id);
+  }));
+  dondeEsta.forEach((ids, k)=>{
+    if(ids.length > 1){
+      const [gi, u] = k.split("#"); const g = grupos[+gi];
+      avisos.push(`La unidad ${g.ref} ${u} (${g.fab}) está en más de un palet: ${[...new Set(ids)].join(", ")}.`);
+    }
+  });
+  // El "N" de n/N (total de unidades de ese tipo) debe ser el mismo en todo el grupo y coincidir con
+  // la cantidad de números de plano de la lista; lo que no cuadre se avisa (suele ser un error de tecleo).
+  const cuentaN = new Map();
+  origen.forEach(o=>{
+    const N = +o.u.split("/")[1];
+    if(!cuentaN.has(o.gi)) cuentaN.set(o.gi, new Map());
+    cuentaN.get(o.gi).set(N, (cuentaN.get(o.gi).get(N) || 0) + 1);
+  });
+  cuentaN.forEach((m, gi)=>{
+    const g = grupos[gi];
+    const N = [...m.entries()].sort((a,b)=> b[1] - a[1])[0][0];
+    g.n = N;
+    if(m.size > 1) origen.filter(o => o.gi === gi && +o.u.split("/")[1] !== N).forEach(o=>
+      avisos.push(`Hoja «${o.hoja}» fila ${o.fila} (${o.palet.id}): la unidad «${o.u}» de ${g.ref} no cuadra, las demás son «de ${N}».`));
+    if(g.planos.length !== N) avisos.push(`${g.ref} (${g.fab}, ${g.ub}, ${g.mo}, ${g.me}): las unidades son «de ${N}» pero la lista tiene ${g.planos.length} números de plano.`);
+  });
+  const unidades = palets.reduce((n,p)=> n + p.items.length, 0);
+  return { palets, grupos, avisos, unidades };
+}
+
+// Normaliza para comparar: minúsculas, sin tildes ni ª/º, pero conservando la Ñ (hay palets "N" y "Ñ").
+function normPalet(s){
+  return String(s == null ? "" : s).toLowerCase().replace(/ñ/g, "\u0001").normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "").replace(/\u0001/g, "ñ").replace(/[ªº]/g, "").replace(/\s+/g, " ").trim();
+}
+
+// Busca en los palets cargados. Devuelve {tipo, ...} según lo que se haya escrito:
+//  · un número de plano (820)       → "plano": los tipos de ventana que lo incluyen y los palets donde viajan
+//  · "palet 14", "p-14", "palet Ñ"  → "palet": el contenido de ese palet
+//  · cualquier otra cosa            → "texto": unidades que contienen todas las palabras (ref, n/N, ubicación…)
+function buscarEnPalets(datos, consulta){
+  const q = normPalet(consulta);
+  if(!q) return null;
+  const { palets, grupos } = datos;
+  const mp = /^(?:palet[\s-]*(\S+)|p[\s-]+(\S+)|p-?(\d+))$/.exec(q);
+  if(mp){
+    const id = "palet " + (mp[1] || mp[2] || mp[3]);
+    const lista = palets.filter(p => normPalet(p.id) === id || normPalet(p.id).startsWith(id + " ("));
+    if(lista.length) return { tipo: "palet", palets: lista };
+  }
+  if(!/\s/.test(q)){
+    const idx = [];
+    grupos.forEach((g, gi)=>{ if(g.planos.some(p => normPalet(p) === q)) idx.push(gi); });
+    if(idx.length){
+      return { tipo: "plano", plano: q, grupos: idx.map(gi=>{
+        const porPalet = [];
+        palets.forEach(p=>{
+          const us = p.items.filter(it => it.g === gi).map(it => it.u);
+          if(us.length) porPalet.push({ palet: p, unidades: us });
+        });
+        return { gi, g: grupos[gi], porPalet };
+      }) };
+    }
+    if(/^\d+$/.test(q)){
+      const parecidos = new Set();
+      grupos.forEach(g=> g.planos.forEach(p=>{ if(normPalet(p).startsWith(q)) parecidos.add(p); }));
+      if(parecidos.size) return { tipo: "parecidos", numeros: [...parecidos].sort((a,b)=> a.length - b.length || (a < b ? -1 : 1)) };
+    }
+  }
+  const tokens = q.split(" ");
+  const res = [];
+  palets.forEach(p=>{
+    const items = p.items.filter(it=>{
+      const g = grupos[it.g];
+      const pajar = normPalet([p.id, g.ref, g.fab, g.ap, g.ub, g.mo, g.me, it.u].join(" "));
+      return tokens.every(t => pajar.includes(t));
+    });
+    if(items.length) res.push({ palet: p, items });
+  });
+  return { tipo: "texto", resultados: res };
+}
+
+// ---- Ventanas en obra: en qué palet viaja cada ventana (a partir del Excel de contenido de palets) ----
+async function leerPaletsDesdeArchivo(file){
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type: "array" });
+  const hojas = wb.SheetNames.map(nombre=>{
+    const ws = wb.Sheets[nombre];
+    const rango = ws["!ref"] ? XLSX.utils.decode_range(ws["!ref"]) : null;
+    return { name: nombre, fila0: rango ? rango.s.r : 0, rows: rango ? XLSX.utils.sheet_to_json(ws, { header: 1, defval: "", blankrows: true }) : [] };
+  });
+  return parsearPaletsDesdeHojas(hojas);
+}
+
+function abrirCargarPalets(obraId, hayDatos){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  openModal(`
+    <h3>${hayDatos ? "Actualizar" : "Cargar"} Excel de palets</h3>
+    <p class="muted" style="margin-bottom:12px;">Elige el Excel «Contenido de cada palet» (con los palets en columnas: fabricación, unidad, referencia, apertura, ubicación, motor, medidas y planos). ${hayDatos ? "Sustituirá a lo que hay cargado ahora." : ""}</p>
+    <input type="file" id="inpArchivoPalets" accept=".xlsx,.xls" />
+    <div id="resumenPalets" style="margin-top:12px;"></div>
+  `);
+  document.getElementById("inpArchivoPalets").addEventListener("change", async (e)=>{
+    const file = e.target.files[0]; if(!file) return;
+    const cont = document.getElementById("resumenPalets");
+    cont.innerHTML = `<p class="muted">Leyendo…</p>`;
+    let datos;
+    try{ datos = await leerPaletsDesdeArchivo(file); }
+    catch(err){ cont.innerHTML = `<p style="color:var(--rojo);">No he podido leer ese archivo: ${esc(err.message||err)}</p>`; return; }
+    if(!datos.palets.length || !datos.unidades){
+      cont.innerHTML = `<p style="color:var(--rojo);">No he encontrado palets en ese archivo. Cada palet debe empezar con una celda «PALET 1», «PALET A»… y tener debajo una fila por unidad.</p>`;
+      return;
+    }
+    cont.innerHTML = `
+      <p><b>${datos.palets.length}</b> palets · <b>${datos.unidades}</b> unidades · <b>${datos.grupos.length}</b> tipos de ventana</p>
+      ${datos.avisos.length ? `
+        <details style="margin:8px 0;" ${datos.avisos.length <= 6 ? "open" : ""}>
+          <summary style="font-weight:600;cursor:pointer;">⚠️ ${datos.avisos.length} aviso${datos.avisos.length===1?"":"s"} a revisar en el Excel</summary>
+          <ul style="margin:8px 0 0 18px;font-size:13px;">${datos.avisos.map(a=>`<li style="margin-bottom:4px;">${esc(a)}</li>`).join("")}</ul>
+        </details>` : `<p class="muted">Sin avisos: el Excel está limpio.</p>`}
+      <button class="btn btn-primary btn-block" id="btnGuardarPalets" style="margin-top:10px;">Guardar en la app</button>`;
+    document.getElementById("btnGuardarPalets").addEventListener("click", async (ev)=>{
+      ev.target.disabled = true; ev.target.textContent = "Guardando…";
+      try{
+        await db.collection("obras").doc(obraId).collection("paletsCarga").doc("datos").set({
+          archivo: file.name, fecha: new Date().toISOString(), subidoPor: nombreUsuario() || "",
+          palets: datos.palets, grupos: datos.grupos, avisos: datos.avisos, unidades: datos.unidades
+        });
+        closeModal(); toast("Palets guardados");
+      }catch(err){ ev.target.disabled = false; ev.target.textContent = "Guardar en la app"; toast("No se ha podido guardar: " + (err.message||err)); }
+    });
+  });
+}
+
+function htmlTipoVentanaPalet(g){
+  return `<b>${esc(g.ref)}</b> · ${esc(g.ap)} · ${esc(g.ub)} · ${esc(g.mo)} · ${esc(g.me)}`;
+}
+function htmlNotaPalet(p){ return p.nota ? ` <span class="pal-nota">${esc(p.nota)}</span>` : ""; }
+
+// Pinta el resultado de buscarEnPalets(). `ventanas` son las de la obra (para enlazar el nº de plano con su casa/planta).
+function htmlResultadoPalets(res, datos, ventanas){
+  if(!res) return `<div class="empty">Escribe un número de plano para ver en qué palet está.</div>`;
+  if(res.tipo === "parecidos"){
+    return `<div class="card"><p class="muted" style="margin-bottom:8px;">No hay ningún plano exactamente así. ¿Alguno de estos?</p>
+      <div>${res.numeros.slice(0, 60).map(n=>`<button class="pal-chip pal-sugerencia" data-q="${esc(n)}">${esc(n)}</button>`).join("")}</div></div>`;
+  }
+  if(res.tipo === "plano"){
+    const v = (ventanas || []).find(x => !x.aliasTo && normPalet(x.numeroPlano) === res.plano);
+    const enApp = v ? `<div class="pal-app">En la app: ${[v.casa && `Casa ${esc(v.casa)}`, v.planta && `Planta ${esc(v.planta)}`, v.referencia && esc(v.referencia)].filter(Boolean).join(" · ") || "sin casa asignada todavía"}</div>` : "";
+    return enApp + res.grupos.map(({ g, porPalet })=>{
+      const total = porPalet.reduce((n, pp)=> n + pp.unidades.length, 0);
+      return `
+        <div class="card pal-card">
+          <div class="pal-plano">Plano ${esc(res.plano)}</div>
+          <div class="pal-tipo">${htmlTipoVentanaPalet(g)}</div>
+          <div class="muted" style="margin-bottom:10px;">${esc(g.fab)} · ${g.n} unidades de este tipo</div>
+          ${porPalet.length ? porPalet.map(pp=>`
+            <div class="pal-fila"><span class="pal-nombre">${esc(pp.palet.id)}${htmlNotaPalet(pp.palet)}</span><span class="pal-uds">${pp.unidades.map(esc).join(" · ")}</span></div>`).join("") : `<div class="empty">Este tipo no aparece todavía en ningún palet.</div>`}
+          ${porPalet.length ? `<p class="muted" style="margin-top:10px;">${total} de ${g.n} unidades están registradas en palets.</p>` : ""}
+        </div>`;
+    }).join("") + `<p class="muted" style="margin:4px 2px 14px;">El Excel indica los números de plano de cada tipo, pero no cuál es cada unidad concreta: la ventana ${esc(res.plano)} viaja en uno de estos palets.</p>`;
+  }
+  if(res.tipo === "palet"){
+    return res.palets.map(p=>{
+      const porGrupo = new Map();
+      p.items.forEach(it=>{ if(!porGrupo.has(it.g)) porGrupo.set(it.g, []); porGrupo.get(it.g).push(it.u); });
+      return `<div class="card pal-card">
+        <div class="pal-plano">${esc(p.id)}${htmlNotaPalet(p)}</div>
+        <div class="muted" style="margin-bottom:10px;">${p.items.length} unidades · hoja ${esc(p.hoja)}</div>
+        ${[...porGrupo.entries()].map(([gi, us])=>{
+          const g = datos.grupos[gi];
+          return `<div class="pal-fila"><span class="pal-nombre" style="font-weight:500;">${htmlTipoVentanaPalet(g)}</span><span class="pal-uds">${esc(g.fab)} · ${us.map(esc).join(" · ")}</span></div>
+            <details class="pal-planos"><summary>Planos de este tipo (${g.planos.length})</summary><div>${g.planos.map(esc).join(", ")}</div></details>`;
+        }).join("")}
+      </div>`;
+    }).join("");
+  }
+  // texto libre
+  if(!res.resultados.length) return `<div class="empty">No hay ninguna ventana que coincida.</div>`;
+  const unidades = res.resultados.reduce((n, r)=> n + r.items.length, 0);
+  return `<p class="muted" style="margin:0 2px 8px;">${unidades} unidad${unidades===1?"":"es"} en ${res.resultados.length} palet${res.resultados.length===1?"":"s"}</p>` +
+    res.resultados.slice(0, 80).map(({ palet, items })=>`
+      <div class="card pal-card">
+        <div class="pal-plano">${esc(palet.id)}${htmlNotaPalet(palet)}</div>
+        ${items.map(it=>{ const g = datos.grupos[it.g];
+          return `<div class="pal-fila"><span class="pal-nombre" style="font-weight:500;">${esc(g.ref)} · ${esc(it.u)}</span><span class="pal-uds">${esc(g.ap)} · ${esc(g.ub)} · ${esc(g.mo)} · ${esc(g.me)} · ${esc(g.fab)}</span></div>`; }).join("")}
+      </div>`).join("") + (res.resultados.length > 80 ? `<p class="muted">Se muestran los 80 primeros palets: afina la búsqueda.</p>` : "");
+}
+
 function descargarPlantillaCsv(){
   const filas = [
     ["casa","planta","numero","referencia","ubicacion"],
@@ -1193,8 +1447,8 @@ async function recalcularProgresoObra(obraId, ventanas){
    ============================================================ */
 function renderObraDetalle(obraId, tabInicial, casaInicial){
   const admin = esAdmin();
-  const TABS_ADMIN = ["ventanas","repartidas","mapa","fotos","planos","stats"];
-  const TABS_INSTALADOR = ["ventanas","mapa","planos"];
+  const TABS_ADMIN = ["ventanas","palets","repartidas","mapa","fotos","planos","stats"];
+  const TABS_INSTALADOR = ["ventanas","palets","mapa","planos"];
   const permitidas = admin ? TABS_ADMIN : TABS_INSTALADOR;
   let tab = permitidas.includes(tabInicial) ? tabInicial : "ventanas";
   let recalculando = false; // evita relanzar el auto-recálculo varias veces mientras llega la respuesta
@@ -1215,6 +1469,8 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
   let mapaSeleccionadoId = null; // qué plano se está viendo/editando ahora mismo
   let mapaZoom = 1, mapaPanX = 0, mapaPanY = 0; // ampliación/desplazamiento del plano actual (se reinicia al cambiar de plano)
   let repPeriodo = "semana", repDesde = "", repHasta = ""; // filtro de la pestaña Repartidas (se conserva al repintar)
+  let paletsDatos = undefined; // contenido de los palets cargado desde el Excel (undefined = cargando, null = nada cargado)
+  let paletsTexto = ""; // lo escrito en el buscador de "Ventanas en obra" (se conserva al repintar)
   let migracionMapaIntentada = false; // evita reintentar varias veces la migración del mapa antiguo (single-map)
 
   function pintar(){
@@ -1229,6 +1485,7 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
     const tabsHtml = `
       <div class="tabs">
         <button data-tab="ventanas" class="${tab==="ventanas"?"active":""}">Ventanas</button>
+        <button data-tab="palets" class="${tab==="palets"?"active":""}">Ventanas en obra</button>
         ${admin ? `<button data-tab="repartidas" class="${tab==="repartidas"?"active":""}">Repartidas</button>` : ""}
         <button data-tab="mapa" class="${tab==="mapa"?"active":""}">Mapa</button>
         ${admin ? `<button data-tab="fotos" class="${tab==="fotos"?"active":""}">Fotos y notas</button>` : ""}
@@ -1254,6 +1511,7 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
       });
       if(tab === "planos") pintarPlanos();
       else if(tab === "mapa") pintarMapa(mapas, ventanasVisibles);
+      else if(tab === "palets") pintarPaletsEnObra(ventanasVisibles);
       else pintarVentanasGrid(obraId, ventanasVisibles);
       return;
     }
@@ -1357,12 +1615,48 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
       b.addEventListener("click", ()=> navegar(`#/obra/${obraId}/${b.dataset.tab}`));
     });
 
-    if(tab === "fotos") pintarFotosNotas(ventanasVisibles);
+    if(tab === "palets") pintarPaletsEnObra(ventanasVisibles);
+    else if(tab === "fotos") pintarFotosNotas(ventanasVisibles);
     else if(tab === "planos") pintarPlanos();
     else if(tab === "mapa") pintarMapa(mapas, ventanasVisibles);
     else if(tab === "stats") pintarEstadisticasObra();
     else if(tab === "repartidas") pintarRepartidas(ventanasVisibles);
     else pintarVentanasGrid(obraId, ventanasVisibles);
+  }
+
+  // Pestaña "Ventanas en obra": escribes el número de plano de una ventana y te dice en qué palet viaja.
+  function pintarPaletsEnObra(ventanasVis){
+    const cont = document.getElementById("tabContent");
+    if(paletsDatos === undefined){ cont.innerHTML = `<div class="empty">Cargando…</div>`; return; }
+    const botonCargar = admin ? `<button class="btn btn-outline btn-sm" id="btnCargarPalets" style="margin-top:10px;">📥 ${paletsDatos ? "Actualizar" : "Cargar"} Excel de palets</button>` : "";
+    if(!paletsDatos){
+      cont.innerHTML = `<div class="card"><div class="empty" style="padding:10px 0;">${admin
+        ? "Todavía no has cargado el Excel con el contenido de cada palet. Cárgalo y aquí podrás buscar en qué palet está cada ventana."
+        : "Todavía no hay palets cargados en esta obra."}</div>${botonCargar}</div>`;
+      const b = document.getElementById("btnCargarPalets");
+      if(b) b.addEventListener("click", ()=> abrirCargarPalets(obraId, false));
+      return;
+    }
+    cont.innerHTML = `
+      <div class="card" style="padding:12px 14px;margin-bottom:14px;">
+        <label class="field" style="margin-bottom:0;"><span>Número de plano de la ventana</span>
+          <input type="search" id="inpBuscarPalet" value="${esc(paletsTexto)}" placeholder="Ej: 820" autocomplete="off" /></label>
+        <p class="muted" style="margin-top:8px;">También vale una referencia con su unidad («VAL 03D 17/39») o «palet 14».</p>
+        <p class="muted" style="margin-top:4px;">${paletsDatos.palets.length} palets · ${paletsDatos.unidades} unidades${paletsDatos.fecha ? " · actualizado " + fechaCorta(paletsDatos.fecha) : ""}</p>
+        ${botonCargar}
+      </div>
+      <div id="resPalets"></div>`;
+    const inp = document.getElementById("inpBuscarPalet");
+    const res = document.getElementById("resPalets");
+    const mostrar = ()=>{ res.innerHTML = htmlResultadoPalets(buscarEnPalets(paletsDatos, paletsTexto), paletsDatos, ventanasVis); };
+    inp.addEventListener("input", ()=>{ paletsTexto = inp.value; mostrar(); });
+    res.addEventListener("click", (e)=>{
+      const sug = e.target.closest(".pal-sugerencia");
+      if(sug){ paletsTexto = sug.dataset.q; inp.value = paletsTexto; mostrar(); }
+    });
+    const b = document.getElementById("btnCargarPalets");
+    if(b) b.addEventListener("click", ()=> abrirCargarPalets(obraId, true));
+    mostrar();
   }
 
   function pintarVentanasGrid(obraId, ventanas){
@@ -2108,6 +2402,12 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
     pintar();
   }, err=> toast("Error cargando el mapa: " + err.message));
   unsubscribers.push(unsub4);
+
+  const unsub5 = obraRef.collection("paletsCarga").doc("datos").onSnapshot(doc=>{
+    paletsDatos = doc.exists ? doc.data() : null;
+    if(tab === "palets") pintar();
+  }, ()=>{ paletsDatos = null; if(tab === "palets") pintar(); });
+  unsubscribers.push(unsub5);
 }
 
 function abrirAddVentanas(obraId, totalActual){
