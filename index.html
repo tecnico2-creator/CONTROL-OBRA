@@ -138,6 +138,18 @@
   .pal-nota{font-size:12px;font-weight:700;background:var(--gris-100);color:var(--gris-600);border-radius:6px;padding:2px 6px;margin-left:4px;white-space:nowrap;}
   .pal-planos{font-size:13px;color:var(--gris-600);padding:0 0 6px;}
   .pal-planos summary{cursor:pointer;}
+  .fact-scroll{overflow-x:auto;margin:8px 0;border:1px solid var(--gris-200);border-radius:10px;}
+  .fact-tabla{border-collapse:collapse;width:100%;min-width:520px;font-size:14px;background:#fff;}
+  .fact-tabla th,.fact-tabla td{padding:7px 9px;text-align:right;border-bottom:1px solid var(--gris-200);white-space:nowrap;}
+  .fact-tabla th:first-child,.fact-tabla td:first-child{text-align:left;}
+  .fact-tabla thead th{background:var(--gris-100,#f1f3f2);font-weight:800;}
+  .fact-tabla .fact-sub th{font-size:11px;font-weight:600;color:#6b7280;padding-top:0;}
+  .fact-grupo td{background:#e3efe8;font-weight:800;text-align:left!important;color:var(--primario-osc);}
+  .fact-vacia td{color:#9ca3af;}
+  .fact-total td{font-weight:800;background:#e3efe8;}
+  .fact-nota{display:block;font-size:11px;font-weight:500;color:#6b7280;}
+  details.fact-resumen{margin-bottom:14px;}
+  details.fact-resumen summary{cursor:pointer;font-weight:800;padding:4px 0;}
   .pal-chip{border:1px solid var(--gris-200);background:#fff;border-radius:16px;padding:6px 12px;margin:0 6px 6px 0;font-size:15px;font-weight:700;color:var(--primario-osc);}
   .vgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(88px,1fr));gap:10px;}
   .vchip{
@@ -1586,6 +1598,7 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
         </div>
         <div class="btn-row">
           <button class="btn btn-secondary" id="btnInformeObra">📅 Informe de instalación</button>
+          <button class="btn btn-secondary" id="btnFacturacion">🧾 Facturación</button>
         </div>
       </div>
 
@@ -1605,6 +1618,7 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
     document.getElementById("btnExportEntregadas").addEventListener("click", ()=> abrirExportarEntregadas(obraId, obraData, ventanasVisibles));
     document.getElementById("btnExportFotosNotas").addEventListener("click", ()=> abrirExportarFotosNotas(obraId, obraData, ventanasVisibles));
     document.getElementById("btnInformeObra").addEventListener("click", ()=> abrirInformeInstalacion({ tipo: "obra", obraId, obraNombre: obraData.nombre, ventanas: ventanasVisibles }));
+    document.getElementById("btnFacturacion").addEventListener("click", ()=> abrirFacturacion(obraId, obraData, ventanas, paletsDatos || null));
     document.getElementById("btnEliminarObra").addEventListener("click", ()=> abrirConfirmarEliminarObra(obraId, obraData));
     document.getElementById("btnRecalcular").addEventListener("click", async ()=>{
       toast("Recalculando…");
@@ -1645,6 +1659,7 @@ function renderObraDetalle(obraId, tabInicial, casaInicial){
         <p class="muted" style="margin-top:4px;">${paletsDatos.palets.length} palets · ${paletsDatos.unidades} unidades${paletsDatos.fecha ? " · actualizado " + fechaCorta(paletsDatos.fecha) : ""}</p>
         ${botonCargar}
       </div>
+      ${admin ? htmlResumenFacturacion(calcularFacturacion(ventanas, paletsDatos, null)) : ""}
       <div id="resPalets"></div>`;
     const inp = document.getElementById("inpBuscarPalet");
     const res = document.getElementById("resPalets");
@@ -5201,6 +5216,245 @@ function colapsarEventosDefinitivos(eventosEtapa, iniIso, finIso){
     if(ev.activar && ev.fecha >= iniIso && ev.fecha < finIso) definitivos.push(ev);
   });
   return definitivos;
+}
+
+/* ============================================================
+   FACTURACIÓN: ventanas por tipo de la plantilla de facturación
+   (total en la app, en obra según los palets, instaladas, selladas y acristaladas)
+   ============================================================ */
+// Tipos de la plantilla, en su orden. "grupo" abre un encabezado nuevo en la tabla.
+const TIPOS_FACTURACION = [
+  { k: "PAL01" }, { k: "PAL02", nota: "incluye VALC223" }, { k: "PAL05" }, { k: "PAL06" }, { k: "PAL07" },
+  { k: "PAL04", grupo: "CARPINT AL. 60 H.O." },
+  { k: "PAL08", grupo: "CARPINT AL. MILL.2000" },
+  { k: "PAL09", grupo: "CARPINT AL. PUERTAS M.C." },
+  { k: "VAL01 EXT TIPO A", grupo: "VENTANAS AL." }, { k: "VAL01 INT TIPO D" },
+  { k: "VAL02 EXT TIPO A" }, { k: "VAL03 EXT TIPO A" }, { k: "VAL03 INT TIPO D" },
+  { k: "VAL04 EXT TIPO A" }, { k: "VAL05 EXT TIPO A" }, { k: "VAL06 EXT TIPO A" },
+  { k: "VAL07 INT TIPO D" }, { k: "VAL10 INT TIPO D" }, { k: "VAL11 INT TIPO D" }, { k: "VAL12 INT TIPO D" },
+  { k: "VAL08 EXT TIPO A" }, { k: "VAL08 INT TIPO D" }, { k: "VAL09 EXT TIPO A" }
+];
+const COLS_FACTURACION = [
+  { key: "total", label: "Total", sub: "en la app" },
+  { key: "enObra", label: "En obra", sub: "palets" },
+  { key: "instaladas", label: "Instaladas", sub: "montaje" },
+  { key: "selladas", label: "Selladas", sub: "sellado final" },
+  { key: "acristaladas", label: "Acristaladas", sub: "vidrio" }
+];
+
+// Convierte la referencia de la ventana (p.ej. "VAL 03D", "PAL 02I") y su ubicación (Exterior/Interior/
+// Patio Interior) en el tipo de la plantilla: se ignora la mano (D/I) y en las VAL se distingue EXT/INT.
+function tipoFacturacion(referencia, ubicacion){
+  const ref = String(referencia || "").toUpperCase().replace(/\s+/g, "");
+  if(!ref) return "";
+  if(/^VALC223/.test(ref)) return "PAL02";
+  const m = /^(PAL|VAL)0*(\d{1,2})[DI]?$/.exec(ref);
+  if(!m) return "";
+  const num = m[2].padStart(2, "0");
+  if(m[1] === "PAL") return "PAL" + num;
+  const ub = normPalet(ubicacion);
+  if(ub.startsWith("ext")) return `VAL${num} EXT TIPO A`;
+  if(ub.includes("interior")) return `VAL${num} INT TIPO D`;
+  return `VAL${num} (sin ubicación)`;
+}
+
+// Cuenta por tipo. `marcas` = null → etapas según el estado actual de cada ventana (acumulado);
+// o {instalada:Set, sellada:Set, acristalada:Set} con los ids de ventana marcados en un periodo.
+function calcularFacturacion(ventanas, datosPalets, marcas){
+  const filas = new Map();
+  const fila = (k)=>{
+    if(!filas.has(k)) filas.set(k, { k, total: 0, enObra: 0, instaladas: 0, selladas: 0, acristaladas: 0 });
+    return filas.get(k);
+  };
+  TIPOS_FACTURACION.forEach(t => fila(t.k));
+  const planoTipo = new Map();
+  if(datosPalets){
+    datosPalets.grupos.forEach(g=>{
+      const t = tipoFacturacion(g.ref, g.ub);
+      g.planos.forEach(p=>{ if(!planoTipo.has(String(p))) planoTipo.set(String(p), t); });
+    });
+    datosPalets.palets.forEach(p => p.items.forEach(it=>{
+      const g = datosPalets.grupos[it.g];
+      fila(tipoFacturacion(g.ref, g.ub) || "Sin tipo").enObra++;
+    }));
+  }
+  const SIN_TIPO = "Sin tipo (sin referencia)";
+  ventanas.filter(v => !v.aliasTo && v.asignada !== false).forEach(v=>{
+    const t = planoTipo.get(String(v.numeroPlano)) || tipoFacturacion(v.referencia, v.ubicacion) || SIN_TIPO;
+    const f = filas.get(t) || fila(t);
+    const hecha = (e)=> marcas ? marcas[e].has(v.id) : !!(v.estado && v.estado[e]);
+    f.total++;
+    if(hecha("instalada")) f.instaladas++;
+    if(hecha("sellada")) f.selladas++;
+    if(hecha("acristalada")) f.acristaladas++;
+  });
+  const plantilla = TIPOS_FACTURACION.map(t => ({ ...filas.get(t.k), grupo: t.grupo, nota: t.nota }));
+  const enPlantilla = new Set(TIPOS_FACTURACION.map(t => t.k));
+  const extras = [...filas.values()].filter(f => !enPlantilla.has(f.k))
+    .filter(f => f.total || f.enObra || f.instaladas || f.selladas || f.acristaladas)
+    .sort((a,b)=> compararNatural(a.k, b.k));
+  if(extras.length) extras[0] = { ...extras[0], grupo: "OTROS TIPOS (no están en la plantilla)" };
+  const todas = [...plantilla, ...extras];
+  const tot = { total: 0, enObra: 0, instaladas: 0, selladas: 0, acristaladas: 0 };
+  todas.forEach(f => COLS_FACTURACION.forEach(c => tot[c.key] += f[c.key]));
+  return { filas: todas, tot };
+}
+
+function htmlTablaFacturacion(res){
+  const celdas = (f)=> COLS_FACTURACION.map(c => `<td>${f[c.key]}</td>`).join("");
+  const cuerpo = res.filas.map(f=>{
+    const cab = f.grupo ? `<tr class="fact-grupo"><td colspan="${COLS_FACTURACION.length + 1}">${esc(f.grupo)}</td></tr>` : "";
+    const vacia = COLS_FACTURACION.every(c => !f[c.key]);
+    return cab + `<tr class="${vacia ? "fact-vacia" : ""}"><td class="fact-tipo">${esc(f.k)}${f.nota ? `<span class="fact-nota">${esc(f.nota)}</span>` : ""}</td>${celdas(f)}</tr>`;
+  }).join("");
+  return `<div class="fact-scroll"><table class="fact-tabla">
+    <thead>
+      <tr><th>Tipo</th>${COLS_FACTURACION.map(c=>`<th>${c.label}</th>`).join("")}</tr>
+      <tr class="fact-sub"><th></th>${COLS_FACTURACION.map(c=>`<th>${c.sub}</th>`).join("")}</tr>
+    </thead>
+    <tbody>${cuerpo}<tr class="fact-total"><td>TOTAL</td>${celdas(res.tot)}</tr></tbody>
+  </table></div>`;
+}
+
+function htmlResumenFacturacion(res){
+  return `<details class="card fact-resumen" style="padding:10px 14px;"><summary>Resumen por tipo de ventana (acumulado)</summary>${htmlTablaFacturacion(res)}</details>`;
+}
+
+const NOTA_FACTURACION = "Total = ventanas de ese tipo en la app. En obra = unidades de ese tipo en los palets cargados (pestaña «Ventanas en obra»). Instaladas = montaje de la carpintería; selladas = sellado final y ajustes; acristaladas = vidrio.";
+
+function abrirFacturacion(obraId, obraData, ventanas, datosPalets){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  openModal(`
+    <h3>Facturación</h3>
+    <p class="muted" style="margin-bottom:12px;">Ventanas por cada tipo de la plantilla de facturación.</p>
+    <label class="field"><span>Periodo de lo instalado, sellado y acristalado</span>
+      <select id="selPeriodoFact">
+        <option value="todo" selected>Todo (acumulado)</option>
+        <option value="hoy">Hoy</option>
+        <option value="semana">Esta semana</option>
+        <option value="mes">Este mes</option>
+        <option value="rango">Rango de fechas…</option>
+      </select>
+    </label>
+    <div id="rangoFact" style="display:none;">
+      <div class="btn-row">
+        <label class="field"><span>Desde</span><input type="date" id="inpDesdeFact" /></label>
+        <label class="field"><span>Hasta</span><input type="date" id="inpHastaFact" /></label>
+      </div>
+    </div>
+    <div id="tablaFact"><p class="muted">Calculando…</p></div>
+    <p class="muted" style="margin:8px 0 12px;font-size:12.5px;">${esc(NOTA_FACTURACION)} Con un periodo elegido, instaladas, selladas y acristaladas cuentan solo lo marcado dentro de ese periodo; total y en obra siguen siendo acumulados.${datosPalets ? "" : " Todavía no hay palets cargados: la columna «En obra» sale a 0 hasta que cargues el Excel en «Ventanas en obra»."}</p>
+    <div class="btn-row">
+      <button class="btn btn-secondary" id="btnFactPdf">🧾 Exportar PDF</button>
+      <button class="btn btn-secondary" id="btnFactXls">📊 Exportar Excel</button>
+    </div>
+  `);
+  const sel = document.getElementById("selPeriodoFact");
+  const contTabla = document.getElementById("tablaFact");
+  let eventos = null, actual = null, version = 0;
+
+  async function recalcular(){
+    const mi = ++version;
+    const periodo = sel.value;
+    const desde = document.getElementById("inpDesdeFact").value;
+    const hasta = document.getElementById("inpHastaFact").value;
+    document.getElementById("rangoFact").style.display = periodo === "rango" ? "block" : "none";
+    if(periodo === "rango" && !desde && !hasta){ contTabla.innerHTML = `<p class="muted">Indica al menos una fecha.</p>`; actual = null; return; }
+    let marcas = null, label = "Acumulado (todo lo hecho hasta hoy)";
+    if(periodo !== "todo"){
+      contTabla.innerHTML = `<p class="muted">Calculando…</p>`;
+      try{
+        if(!eventos) eventos = (await db.collection("eventos").where("obraId","==",obraId).get()).docs.map(d=>d.data());
+      }catch(err){ contTabla.innerHTML = `<p style="color:var(--rojo);">No he podido leer el historial: ${esc(err.message||err)}</p>`; actual = null; return; }
+      if(mi !== version) return;
+      const r = calcularRangoInforme(periodo, desde, hasta);
+      label = r.label;
+      const soloEtapas = eventos.filter(ev => ev.tipo === "etapa" && ["instalada","sellada","acristalada"].includes(ev.etapa));
+      const definitivos = colapsarEventosDefinitivos(soloEtapas, r.ini.toISOString(), r.fin.toISOString());
+      const real = new Map(ventanas.map(v => [v.id, v.aliasTo || v.id]));
+      marcas = { instalada: new Set(), sellada: new Set(), acristalada: new Set() };
+      definitivos.forEach(ev => marcas[ev.etapa].add(real.get(ev.ventanaId) || ev.ventanaId));
+    }
+    const res = calcularFacturacion(ventanas, datosPalets, marcas);
+    actual = { res, label };
+    contTabla.innerHTML = `<p class="muted" style="margin-bottom:6px;">${esc(label)}</p>` + htmlTablaFacturacion(res);
+  }
+  sel.addEventListener("change", recalcular);
+  document.getElementById("inpDesdeFact").addEventListener("change", recalcular);
+  document.getElementById("inpHastaFact").addEventListener("change", recalcular);
+  document.getElementById("btnFactPdf").addEventListener("click", ()=>{ if(actual) generarPdfFacturacion(obraData.nombre || "Obra", actual.res, actual.label, sel.value !== "todo"); else toast("Elige primero el periodo"); });
+  document.getElementById("btnFactXls").addEventListener("click", ()=>{ if(actual) generarExcelFacturacion(obraData.nombre || "Obra", actual.res, actual.label, sel.value !== "todo"); else toast("Elige primero el periodo"); });
+  recalcular();
+}
+
+function generarExcelFacturacion(obraNombre, res, label, porPeriodo){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  const wb = XLSX.utils.book_new();
+  const filas = res.filas.map(f=>({
+    Tipo: f.k + (f.nota ? ` (${f.nota})` : ""),
+    "Total en la app": f.total, "En obra (palets)": f.enObra, "Instaladas (montaje carpintería)": f.instaladas,
+    "Selladas (sellado final y ajustes)": f.selladas, "Acristaladas (vidrio)": f.acristaladas
+  }));
+  filas.push({ Tipo: "TOTAL", "Total en la app": res.tot.total, "En obra (palets)": res.tot.enObra, "Instaladas (montaje carpintería)": res.tot.instaladas,
+    "Selladas (sellado final y ajustes)": res.tot.selladas, "Acristaladas (vidrio)": res.tot.acristaladas });
+  const ws = XLSX.utils.json_to_sheet(filas);
+  ws["!cols"] = [{ wch: 28 }, { wch: 16 }, { wch: 16 }, { wch: 30 }, { wch: 32 }, { wch: 22 }];
+  XLSX.utils.book_append_sheet(wb, ws, "Facturación");
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([
+    { Concepto: "Obra", Valor: obraNombre },
+    { Concepto: "Periodo (instaladas, selladas, acristaladas)", Valor: label },
+    { Concepto: "Generado", Valor: new Date().toLocaleString("es-ES") },
+    { Concepto: "Notas", Valor: NOTA_FACTURACION + (porPeriodo ? " Total y en obra son acumulados." : "") }
+  ]), "Resumen");
+  XLSX.writeFile(wb, `Facturacion_${slug(obraNombre)}_${new Date().toISOString().slice(0,10)}.xlsx`);
+  toast("Excel de facturación generado");
+}
+
+function generarPdfFacturacion(obraNombre, res, label, porPeriodo){
+  if(!esAdmin()){ toast("Solo la oficina puede hacer esto"); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const M = 15, W = 180;
+  let y = M;
+  doc.setFont("helvetica","bold"); doc.setFontSize(17); doc.setTextColor(20);
+  doc.text(`Facturación — ${obraNombre}`, M, y); y += 7;
+  doc.setFont("helvetica","normal"); doc.setFontSize(11); doc.setTextColor(60);
+  doc.text(`Periodo (instaladas, selladas, acristaladas): ${label}`, M, y); y += 5.5;
+  doc.text(`Generado: ${new Date().toLocaleString("es-ES")}`, M, y); y += 6;
+  doc.setFontSize(9.5); doc.setTextColor(90);
+  const nota = doc.splitTextToSize(NOTA_FACTURACION + (porPeriodo ? " Total y en obra son acumulados." : ""), W);
+  doc.text(nota, M, y); y += nota.length * 4.3 + 5;
+
+  const cols = [{ label: "Tipo", w: 56 }, ...COLS_FACTURACION.map((c, i)=>({ label: c.label, w: [20, 22, 26, 26, 30][i], align: "right" }))];
+  const cab = ()=>{
+    doc.setFillColor(226,236,230); doc.rect(M, y, W, 8, "F");
+    doc.setFont("helvetica","bold"); doc.setFontSize(10); doc.setTextColor(20);
+    let x = M;
+    cols.forEach(c=>{ doc.text(c.label, c.align === "right" ? x + c.w - 2 : x + 2, y + 5.5, c.align === "right" ? { align: "right" } : undefined); x += c.w; });
+    y += 8;
+  };
+  cab();
+  const fila = (txts, estilo)=>{
+    if(y > 280){ doc.addPage(); y = M; cab(); }
+    if(estilo === "grupo"){ doc.setFillColor(214,232,220); doc.rect(M, y, W, 7, "F"); }
+    if(estilo === "total"){ doc.setFillColor(226,236,230); doc.rect(M, y, W, 8, "F"); }
+    doc.setFont("helvetica", estilo ? "bold" : "normal"); doc.setFontSize(10.5);
+    let x = M;
+    txts.forEach((t, k)=>{
+      const c = cols[k];
+      doc.setTextColor(estilo || t !== "0" ? 20 : 150);
+      doc.text(String(t), c.align === "right" ? x + c.w - 2 : x + 2, y + (estilo === "total" ? 5.6 : 5), c.align === "right" ? { align: "right" } : undefined);
+      x += c.w;
+    });
+    y += estilo === "total" ? 8 : 7;
+  };
+  res.filas.forEach(f=>{
+    if(f.grupo) fila([f.grupo], "grupo");
+    fila([f.k + (f.nota ? ` (${f.nota})` : ""), ...COLS_FACTURACION.map(c => String(f[c.key]))]);
+  });
+  fila(["TOTAL", ...COLS_FACTURACION.map(c => String(res.tot[c.key]))], "total");
+  doc.save(`Facturacion_${slug(obraNombre)}_${new Date().toISOString().slice(0,10)}.pdf`);
+  toast("PDF de facturación generado");
 }
 
 function abrirInformeInstalacion(ctx){
